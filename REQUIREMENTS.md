@@ -28,3 +28,5 @@ Decyzja użytkownika (0.3.6): dodać fizyczne sterowanie kamerą, w tym reflekto
 Decyzja administratora 0.3.12 (poz. 70): magazyn niezależny od fizycznego dysku, wymagany punkt montowania zamiast UUID; naprawa aktualizacji z terminalnego rollbacku bez kasowania danych.
 
 Decyzja użytkownika 0.3.13 (poz. 35–36): przyrostowy import istniejących plików, ręczny zakres kamery i dat, wstrzymanie oraz postęp bez kasowania indeksu.
+
+Decyzja użytkownika 0.3.17 (poz. 19, 22, 35, 63, 67, 68): dwuklik wideo Live powiększa i przywraca kafelek; automatyczne usuwanie potwierdzonych pustych nagrań podczas indeksowania po dodatkowej weryfikacji, natychmiastowa informacja o przyjęciu zlecenia.

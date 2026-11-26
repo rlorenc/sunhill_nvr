@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from . import activity_rpc,archive,database,mount,protection,retention,health_service,clock_service,rotation_service,stream_health,service_monitor
 from .media import probe
-from .files import open_confined,acquire_shared
+from .files import open_confined,acquire_shared,try_exclusive
 from .storage import identify_directory as identify,space_for
 from .supervisor import Supervisor,probe_rtsp_codec
 from .cameras import SLUG
@@ -110,6 +110,40 @@ def ensure_camera_directories(db,root: Path,guard) -> None:
             finally:os.close(child)
     finally:os.close(root_fd)
 
+def remove_empty_recording(config,db,path,observed,*,guard,active,now):
+    """Remove only an old, unprotected, repeatedly verified zero-byte MP4.
+
+    Activity is checked again before opening our own descriptor (the helper
+    detects all open handles, including our own). External writers must not
+    reopen old archive files without coordination, as with normal retention.
+    """
+    from .rotation import recording_info,unlink_confined
+    if observed.st_size!=0 or now-observed.st_mtime<86400 or now-observed.st_ctime<300:
+        return False
+    relative=str(path.relative_to(config.archive))
+    if recording_info(config.archive,path) is None:return False
+    def signature(info):
+        return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns,info.st_nlink)
+    try:
+        with retention.exclusive_worker_lock(config.archive_lock):
+            if not rotation_permitted() or not guard():return False
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                if protection.is_protected(db,relative) or active(path):return False
+                fd,info=open_confined(config.archive,relative,expected_size=0)
+                try:
+                    if signature(info)!=signature(observed) or not try_exclusive(fd):return False
+                    if not rotation_permitted() or not guard() or signature(os.fstat(fd))!=signature(observed):return False
+                    unlink_confined(config.archive,path,expected_device=info.st_dev,expected_inode=info.st_ino,
+                                     expected_metadata=(0,info.st_mtime_ns,info.st_ctime_ns))
+                    db.execute('DELETE FROM recording_identity WHERE relative_path=?',(relative,))
+                    db.execute('DELETE FROM recording_stream_info WHERE relative_path=?',(relative,))
+                    db.execute('DELETE FROM recordings WHERE relative_path=?',(relative,))
+                    return True
+                finally:os.close(fd)
+    except (retention.RetentionBusy,FileNotFoundError):return False
+
+
 def index_once(config,db, *, full: bool=True, now: float | None=None, camera=None, dates=None, should_stop=lambda:False, progress=None) -> archive.ScanReport:
     guard=storage_guard(db,config.archive)
     ensure_camera_directories(db,config.archive,guard)
@@ -147,7 +181,8 @@ def index_once(config,db, *, full: bool=True, now: float | None=None, camera=Non
     active=detector(config,'archive')
     report=archive.refresh(db,config.archive,config.timezone,inspect_duration=duration,
                            is_open=active,is_open_batch=getattr(active,'batch',None),mount_check=guard,min_age_seconds=30,now=now,dates=dates,on_verified=verified,on_persist=persist_streams,
-                           commit_guard=lambda:retention.shared_archive_lock(config.archive_lock),camera=camera,should_stop=should_stop,progress=progress)
+                           commit_guard=lambda:retention.shared_archive_lock(config.archive_lock),camera=camera,should_stop=should_stop,progress=progress,
+                           remove_empty=lambda path,info:remove_empty_recording(config,db,path,info,guard=guard,active=active,now=now))
     if report.interrupted:return report
     observations={}
     max_mtime=int(now+300)*1_000_000_000

@@ -130,3 +130,7 @@ Administracja podzielona na osiem sekcji, dedykowane konta FTP w konfiguracji ka
 ### Kandydat 0.3.7 (punkty 33, 35, 39)
 
 Jawnie wpisany staging nie jest pomijany; rozłączne katalogi pozostają wymagane. Aktualizator kontroluje zapisane ścieżki. Zakończony, atomowo opublikowany segment RTSP może być indeksowany natychmiast z weryfikacją tożsamości. Opcjonalne 30 s i przycisk ostatniej minuty; otwarte pliki pozostają nieudostępniane. Odbiór docelowy otwarty.
+
+### 0.3.17 (punkty 19, 22, 35, 63, 67, 68)
+
+Dwuklik wideo Live przełącza powiększenie i przywraca poprzedni rozmiar i kolejność. Indeksowanie potwierdza przyjęcie zlecenia i nie zastępuje aktywnego skanu po ponownym kliknięciu. Na decyzję administratora rozpoznane stare pliki MP4 0 B są usuwane podczas skanu po dodatkowej kontroli wieku, ochrony, aktywności, blokad i niezmienionej tożsamości pliku; niepuste pliki pozostają. Liczniki usuniętych i odroczonych pustych plików są osobne. Statusy wymagań bez zmian; dowody w IMPLEMENTATION_STATUS.md.

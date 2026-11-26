@@ -1,5 +1,13 @@
 # Przekazanie prac - Sunhill NVR
 
+## 0.3.17 - czyszczenie pustych nagrań i dwuklik Live
+
+Baza `7b9bc03` (0.3.16). Administrator potwierdził, że masowe błędy historycznego importu dotyczyły plików 0 B; po ręcznym usunięciu pustych plików skan wykazał jedynie 5 błędów na 78 464 sprawdzonych. Na żądanie administratora indeksator usuwa rozpoznane pliki MP4 o rozmiarze dokładnie 0 B, jeśli ich mtime jest starszy niż 24 h i ctime starszy niż 5 minut. `archive.py` pomija FFprobe dla pustych plików; `workers.py` sprawdza ponownie aktywność, ochronę, granice montowania, tożsamość i metadane oraz blokady archiwum i pliku przed bezpiecznym unlink. Podczas maintenance nie usuwa. Pliki niepuste, otwarte, chronione, dowiązania i katalogi staging/eksportów pozostają nienaruszone. Usunięcie usuwa odpowiadające wpisy indeksu; osobne liczniki pustych usuniętych i odroczonych. Zewnętrzny zapis do starych nagrań musi respektować blokady (jak przy retencji).
+
+`index_control.py`, `static/app.js`: przyjęcie start/pause natychmiast widoczne w GUI, przyciski blokowane podczas żądania, poprzednie odpowiedzi polling nie nadpisują nowego stanu; ponowny start nie zastępuje trwającego lub oczekującego zlecenia. Dwuklik na wideo Live przełącza istniejący tryb powiększenia, bez wymiany elementu odtwarzacza ani zmiany jakości, kolejności i zapamiętanego rozmiaru.
+
+Weryfikacja lokalna: test_index_incremental 9/9 (w tym rzeczywiste MP4, ochrona plików i ponowny start), API 106/106, archive 23/23, workers 20/20, retention 16/16, rotation 12/12, versioned_release 8/8; node browser_smoke i rzeczywisty Chromium `tests/live_controls_browser.py` (syntetyczne odtwarzacze, 11 kamer, dwuklik, odtworzenie własnego układu bez odłączenia playera). Zachowane wszystkie 80 statusów. Nie wykonano operacji usuwania na instalacji administratora ani nowych testów Ubuntu CI. Szczegółowy trwały raport błędów i ponawianie tylko błędnych nagrań pozostają odrębnymi zadaniami.
+
 ## 0.3.16 - zgodność archiwum HEVC
 
 Baza `33a37d8` (0.3.15). Administrator zgłosił błąd odtwarzania najnowszych segmentów mimo HTTP 200: nagrania 30576 i 30563 zawierają HEVC `hev1` i AAC `mp4a`, natomiast live działa. `recorder.py` i `supervisor.py`: równoległy, ograniczony do 5 s na kamerę odczyt kodeka aliasu głównego przed uruchomieniem procesu (maks. 8 równoległych prób); tylko rozpoznane HEVC otrzymuje filtr bitstream i tag `hvc1` bez kodowania obrazu. Brak wyniku nie blokuje zapisu, a wczesny błąd wymusza próbę bez tagu, zachowując dotychczasową awaryjną konwersję dźwięku do AAC. Nie zmienia się go2rtc ani konfiguracja kamery. Nierozpoznany strumień lub awaryjny zapis może nadal dać `hev1`.

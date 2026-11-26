@@ -456,7 +456,7 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     if(!['sub','main'].includes(selected)||selected==='sub'&&!camera.sub_configured)selected=camera.sub_configured?'sub':'main';
     if(enlarged)card.classList.toggle('expanded');
     const remember=()=>livePreferences.set(key,{quality:selected,enlarged});
-    function player(alias){const item=document.createElement('video-stream');item.mode='mse';item.media='video,audio';item.background=false;if(item.video)item.video.muted=true;watchNativeLiveControls(item);item.src=new URL('/live/api/ws?src='+encodeURIComponent(alias),location.origin);return item;}
+    function player(alias){const item=document.createElement('video-stream');item.mode='mse';item.media='video,audio';item.background=false;if(item.video)item.video.muted=true;watchNativeLiveControls(item);item.title='Dwuklik: powiększ lub przywróć obraz';item.addEventListener('dblclick',event=>{if(item!==video||!camera.enabled||document.fullscreenElement||liveLayoutGesture)return;event.preventDefault();event.stopPropagation();closeLiveMenu();toggleExpanded();});item.src=new URL('/live/api/ws?src='+encodeURIComponent(alias),location.origin);return item;}
     let video=null,currentAlias=null,compatibility=false;
     if(camera.enabled){if(livePlayerReady()){currentAlias=selectedLiveAlias(camera,selected,enlarged);video=player(currentAlias);card.append(video);}else card.append(element('p','Oczekiwanie na usługę podglądu.','camera-actions'));}else card.append(element('p','Podgląd wyłączony','camera-actions'));
     const actions=element('div',null,'camera-actions live-options');actions.hidden=true;actions.id='live-options-'+camera.id;actions.setAttribute('role','group');actions.setAttribute('aria-label','Opcje kamery '+camera.name);
@@ -550,7 +550,9 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     function changeQuality(){selected=quality.value;remember();saveLiveQuality(camera,selected);compatibility=false;compat.textContent='Tryb zgodności H.264';if(!video)return;const alias=selectedLiveAlias(camera,selected,enlarged);if(alias!==currentAlias)replacePlayer(alias);}
     quality.addEventListener('change',changeQuality);actions.append(quality,sound);
     const retry=element('button','Połącz ponownie');retry.type='button';retry.hidden=!camera.enabled;retry.addEventListener('click',()=>{if(video)replacePlayer(currentAlias);else{ensureLivePlayer();if(livePlayerReady())renderCameras();}});actions.append(retry);
-    const expand=element('button',enlarged?'Zmniejsz':'Powiększ');expand.hidden=!camera.enabled;expand.addEventListener('click',()=>{enlarged=card.classList.toggle('expanded');expand.textContent=enlarged?'Zmniejsz':'Powiększ';remember();});actions.append(expand);
+    const expand=element('button',enlarged?'Zmniejsz':'Powiększ');expand.hidden=!camera.enabled;
+    function toggleExpanded(){enlarged=card.classList.toggle('expanded');expand.textContent=enlarged?'Zmniejsz':'Powiększ';remember();}
+    expand.addEventListener('click',toggleExpanded);actions.append(expand);
     const button=element('button','Archiwum');
     button.addEventListener('click',()=>{closeLiveMenu();return openArchive(camera);});actions.append(button);
     const volume=element('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.05';volume.value='1';volume.setAttribute('aria-label','Głośność kamery '+camera.name);
@@ -1433,36 +1435,52 @@ $('archive-form').addEventListener('submit',async(event)=>{event.preventDefault(
   }catch(error){storageLocalMessage=error.message;$('storage-change-status').textContent=error.message;notify(error.message,'error');}finally{storagePolling=false;}
 });
 setInterval(pollStorage,3000);
-let indexPollPending=false;
+let indexPollPending=false,indexActionPending=false,indexEpoch=0;
 function renderIndexState(value){
   const labels={idle:'Oczekiwanie',queued:'W kolejce',running:'Indeksowanie w toku',paused:'Wstrzymane',done:'Zakończono',error:'Błąd indeksowania'};
   $('archive-index-status').textContent=(labels[value.state]||'Brak danych')+(value.error?' ('+value.error+')':'');
-  $('archive-index-progress').hidden=value.state!=='running';
-  $('archive-index-pause').disabled=!['running','queued'].includes(value.state);
+  $('archive-index-progress').hidden=!['queued','running'].includes(value.state);
+  $('archive-index-run').disabled=indexActionPending||['queued','running'].includes(value.state);
+  $('archive-index-pause').disabled=indexActionPending||!['running','queued'].includes(value.state);
   const n=x=>Number(x||0).toLocaleString('pl-PL');
-  $('archive-index-counts').textContent='Sprawdzono: '+n(value.scanned)+' | Zapisano / zweryfikowano: '+n(value.accepted)+' | Bez zmian: '+n(value.unchanged)+' | Pominięto (otwarte): '+n(value.skipped)+' | Błędy: '+n(value.failed)+(value.state==='running'&&value.started?' | Średnio: '+n(Math.round((value.scanned||0)/Math.max(1,Date.now()/1000-value.started)))+' plików/s':'');
+  $('archive-index-counts').textContent='Sprawdzono: '+n(value.scanned)+' | Zapisano / zweryfikowano: '+n(value.accepted)+' | Bez zmian: '+n(value.unchanged)+' | Pominięto (otwarte): '+n(value.skipped)+' | Usunięto pustych: '+n(value.empty_removed)+' | Puste odroczone: '+n(value.empty_deferred)+' | Błędy: '+n(value.failed)+(value.state==='running'&&value.started?' | Średnio: '+n(Math.round((value.scanned||0)/Math.max(1,Date.now()/1000-value.started)))+' plików/s':'');
 }
 async function pollIndex(){
-  if(indexPollPending||!me||me.role!=='admin'||document.hidden||$('admin-view').hidden||$('archive-index-panel').closest('[data-admin-section]')?.hidden)return;
-  indexPollPending=true;
+  if(indexPollPending||indexActionPending||!me||me.role!=='admin'||document.hidden||$('admin-view').hidden||$('archive-index-panel').closest('[data-admin-section]')?.hidden)return;
+  indexPollPending=true;const epoch=indexEpoch;
   try{
     const select=$('archive-index-camera'),selected=select.value;
     const options=cameras.map(c=>[c.slug,c.name]).filter(c=>c[0]);
     if(select.options.length!==options.length+1||options.some((c,i)=>select.options[i+1]?.value!==c[0]||select.options[i+1]?.textContent!==c[1])){
       select.replaceChildren(new Option('Wszystkie kamery',''),...options.map(c=>new Option(c[1],c[0])));select.value=selected;
     }
-    renderIndexState(await api('/api/settings/index'));
+    const value=await api('/api/settings/index');if(epoch===indexEpoch&&!indexActionPending)renderIndexState(value);
   }catch(error){/* storage updates can briefly interrupt polling */}finally{indexPollPending=false;}
 }
 $('archive-index-run').addEventListener('click',async()=>{
+  if(indexActionPending||$('archive-index-run').disabled)return;
   const start=$('archive-index-start').value||null,end=$('archive-index-end').value||null;
   if(Boolean(start)!==Boolean(end)){notify('Podaj obie daty indeksowania lub pozostaw obie puste.','error');return;}
   if(start&&end&&start>end){notify('Data początkowa nie może być późniejsza niż końcowa.','error');return;}
-  try{renderIndexState(await api('/api/settings/index','POST',{action:'start',camera:$('archive-index-camera').value||null,start,end}));}catch(error){notify(error.message,'error');}
+  await submitIndexAction({action:'start',camera:$('archive-index-camera').value||null,start,end});
 });
 $('archive-index-pause').addEventListener('click',async()=>{
-  try{renderIndexState(await api('/api/settings/index','POST',{action:'pause'}));}catch(error){notify(error.message,'error');}
+  await submitIndexAction({action:'pause'});
 });
+async function submitIndexAction(data){
+  if(indexActionPending)return;
+  indexActionPending=true;indexEpoch++;
+  $('archive-index-run').disabled=true;$('archive-index-pause').disabled=true;
+  $('archive-index-status').textContent=data.action==='start'?'Przyjmowanie zlecenia…':'Wstrzymywanie…';
+  try{
+    const value=await api('/api/settings/index','POST',data);
+    indexActionPending=false;renderIndexState(value);
+  }catch(error){
+    indexActionPending=false;$('archive-index-status').textContent='Nie potwierdzono zlecenia - sprawdzanie stanu';
+    $('archive-index-run').disabled=false;$('archive-index-pause').disabled=false;
+    notify(error.message,'error');await pollIndex();
+  }finally{indexActionPending=false;}
+}
 setInterval(pollIndex,3000);
 
 $('recording-segment-save').addEventListener('click',async()=>{

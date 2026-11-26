@@ -80,3 +80,54 @@ class IncrementalIndexTests(unittest.TestCase):
         state=index_control.read(self.db)
         self.assertEqual((state['id'],state['state'],state['accepted']),(job['id'],'done',1))
         self.assertEqual(self.count(),1)
+
+    def test_empty_cleanup_only_verified_old_regular_files(self):
+        from types import SimpleNamespace
+        from sunhill_nvr import files,retention
+        cfg=SimpleNamespace(archive=self.root,archive_lock=Path(self.tmp.name)/'lock',timezone='Europe/Warsaw')
+        empty=self.make(1);empty.write_bytes(b'');os.utime(empty,(1,1))
+        bad=self.make(2);fresh=self.make(3);fresh.write_bytes(b'')
+        opened=self.make(4);opened.write_bytes(b'');os.utime(opened,(1,1))
+        protected=self.make(5);protected.write_bytes(b'');os.utime(protected,(1,1))
+        replacement=self.make(6);replacement.write_bytes(b'');os.utime(replacement,(1,1))
+        locked=self.make(7);locked.write_bytes(b'');os.utime(locked,(1,1))
+        link=self.make(8);link.unlink();link.symlink_to(empty)
+        staging=self.make(9,'.sunhill-staging');staging.write_bytes(b'');os.utime(staging,(1,1))
+        self.scan()  # seed a stale index entry for the empty file
+        relative=str(protected.relative_to(self.root))
+        uid=security.create_user(self.db,'cleanupadmin','password-for-tests','admin')
+        self.db.execute("INSERT INTO protected_files(relative_path,reason,created_by,created_at) VALUES(?,?,?,?)",(relative,'test',uid,1));self.db.commit()
+        fd=os.open(locked,os.O_RDONLY);self.addCleanup(os.close,fd);files.acquire_shared(fd)
+        calls=[]
+        def active(p):
+            calls.append(p)
+            if p==replacement and calls.count(p)==2:p.write_bytes(b'new video')
+            return p==opened
+        now=time.time()+600
+        with patch('sunhill_nvr.workers.storage_guard',return_value=lambda:True),patch('sunhill_nvr.workers.detector',return_value=active),patch('sunhill_nvr.workers.rotation_permitted',return_value=True),patch('sunhill_nvr.workers.probe',side_effect=ValueError('corrupt')) as probe:
+            result=workers.index_once(cfg,self.db,now=now)
+        self.assertFalse(empty.exists());self.assertIsNone(self.db.execute('SELECT id FROM recordings WHERE relative_path=?',(str(empty.relative_to(self.root)),)).fetchone())
+        for p in (bad,fresh,opened,protected,replacement,locked,staging):self.assertTrue(p.exists(),p)
+        self.assertTrue(link.is_symlink());self.assertEqual(replacement.read_bytes(),b'new video')
+        self.assertEqual(result.empty_removed,1);self.assertEqual(result.skipped,1)
+        self.assertGreaterEqual(result.empty_deferred,2)
+
+    def test_empty_cleanup_fails_closed_on_activity_or_maintenance(self):
+        from types import SimpleNamespace
+        cfg=SimpleNamespace(archive=self.root,archive_lock=Path(self.tmp.name)/'lock')
+        p=self.make(1);p.write_bytes(b'');os.utime(p,(1,1));now=time.time()+600
+        def remove(**kw):return workers.remove_empty_recording(cfg,self.db,p,p.stat(),now=now,**kw)
+        with patch('sunhill_nvr.workers.rotation_permitted',return_value=False):
+            self.assertFalse(remove(guard=lambda:True,active=lambda _:False))
+        with patch('sunhill_nvr.workers.rotation_permitted',return_value=True):
+            self.assertFalse(remove(guard=lambda:False,active=lambda _:False))
+            with self.assertRaises(RuntimeError):remove(guard=lambda:True,active=lambda _:(_ for _ in ()).throw(RuntimeError('RPC failed')))
+        self.assertTrue(p.exists())
+
+    def test_duplicate_start_keeps_existing_job(self):
+        with self.db:
+            job=index_control.request(self.db,'cam')
+            self.assertEqual(index_control.request(self.db),job)
+        self.assertTrue(index_control.update(self.db,job['id'],state='running',scanned=64))
+        with self.db:self.assertEqual(index_control.request(self.db)['id'],job['id'])
+        self.assertEqual(index_control.read(self.db)['scanned'],64)

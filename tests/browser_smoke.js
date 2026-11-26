@@ -455,9 +455,12 @@ eval(code+`
   if(!$('archive-player').src.endsWith('/202/file'))throw new Error('day scrubber did not select another segment');
   renderIndexState({state:'running',scanned:64,accepted:63,unchanged:20,skipped:1,failed:0,started:Math.floor(Date.now()/1000)-5});
   if($('archive-index-progress').hidden||!$('archive-index-counts').textContent.includes('64')||$('archive-index-pause').disabled)throw new Error('index status not rendered');
+  if(!$('archive-index-run').disabled)throw new Error('running scan can be replaced');
+  renderIndexState({state:'done',empty_removed:2});
+  if($('archive-index-run').disabled||!$('archive-index-counts').textContent.includes('Usunięto pustych: 2'))throw new Error('empty count or start state missing');
   $('archive-index-camera').value='cam';$('archive-index-start').value='2026-11-13';$('archive-index-end').value='2026-11-14';let indexPayload;
   api=async (url,method,data)=>{if(url==='/api/settings/index'&&method==='POST')indexPayload=data;return {state:data?.action==='pause'?'paused':'queued'};};
-  await $('archive-index-run').listeners.click();if(indexPayload.camera!=='cam'||indexPayload.start!=='2026-11-13'||indexPayload.end!=='2026-11-14')throw new Error('index request lost scope');
+  const request=$('archive-index-run').listeners.click();if(!$('archive-index-run').disabled||!$('archive-index-status').textContent.includes('Przyjmowanie'))throw new Error('no immediate acknowledgement');await request;if(indexPayload.camera!=='cam'||indexPayload.start!=='2026-11-13'||indexPayload.end!=='2026-11-14')throw new Error('index request lost scope');
   await $('archive-index-pause').listeners.click();if(indexPayload.action!=='pause'||!$('archive-index-progress').hidden)throw new Error('index pause failed');
   // All top-level notification variants expire; newest notification gets its own full interval.
   let timerId=0;const pendingTimers=new Map();globalThis.setTimeout=(fn,ms)=>{const id=++timerId;pendingTimers.set(id,{fn,ms});return id;};globalThis.clearTimeout=id=>pendingTimers.delete(id);

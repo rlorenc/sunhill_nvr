@@ -61,6 +61,8 @@ class ScanReport:
     unchanged: int = 0
     skipped: int = 0
     interrupted: bool = False
+    empty_removed: int = 0
+    empty_deferred: int = 0
 
 def refresh(db: sqlite3.Connection, root: Path, timezone_name: str, *,
             inspect_duration: Callable[[Path], float], is_open: Callable[[Path], bool],
@@ -69,7 +71,7 @@ def refresh(db: sqlite3.Connection, root: Path, timezone_name: str, *,
             on_verified: Callable[[Path,os.stat_result],None] | None = None,
             on_persist: Callable[[sqlite3.Connection],None] | None = None,
             commit_guard=None, is_open_batch=None, should_stop=lambda:False,
-            progress=None, camera=None, batch_size: int=64) -> ScanReport:
+            progress=None, camera=None, batch_size: int=64, remove_empty=None) -> ScanReport:
     """Stream bounded batches; commit verified records before traversing more.
 
     Full reconciliation only follows a complete scan. Cancellation preserves
@@ -83,10 +85,10 @@ def refresh(db: sqlite3.Connection, root: Path, timezone_name: str, *,
     if min_age_seconds < 0 or not math.isfinite(now) or not 1<=batch_size<=64:
         raise ValueError('invalid scan parameters')
     recordings=iter_recordings(root,min_age_seconds=min_age_seconds,now=now,dates=dates,timezone_name=timezone_name,camera=camera)
-    accepted=failed=removed=scanned=unchanged_count=skipped=0
+    accepted=failed=removed=scanned=unchanged_count=skipped=empty_removed=empty_deferred=0
     gen=None
     def report(interrupted=False):
-        return ScanReport(accepted,failed,removed,scanned,unchanged_count,skipped,interrupted)
+        return ScanReport(accepted,failed,removed,scanned,unchanged_count,skipped,interrupted,empty_removed,empty_deferred)
     def commit(items):
         nonlocal gen,accepted,failed,unchanged_count
         if not mount_check():raise RuntimeError('archive mount changed during scan')
@@ -139,7 +141,7 @@ def refresh(db: sqlite3.Connection, root: Path, timezone_name: str, *,
                 info=r.path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:raise ValueError('invalid file')
                 cached=existing.get(relative)
-                unchanged=bool(cached and cached[0]==info.st_size and cached[1]==info.st_mtime_ns
+                unchanged=bool(info.st_size>0 and cached and cached[0]==info.st_size and cached[1]==info.st_mtime_ns
                                and cached[3]==str(info.st_dev) and cached[4]==str(info.st_ino)
                                and cached[5]==str(info.st_ctime_ns))
                 candidates.append((r,relative,info,cached,unchanged))
@@ -160,6 +162,10 @@ def refresh(db: sqlite3.Connection, root: Path, timezone_name: str, *,
             try:
                 if not unchanged and (active[r.path] if is_open_batch is not None else is_open(r.path)):
                     skipped+=1;continue
+                if info.st_size==0 and remove_empty is not None:
+                    if remove_empty(r.path,info):empty_removed+=1
+                    else:empty_deferred+=1
+                    continue
                 duration=float(cached[2] if unchanged else inspect_duration(r.path))
                 if not math.isfinite(duration) or duration <= 0 or duration > 86400:raise ValueError('invalid duration')
                 after=r.path.lstat()

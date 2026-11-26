@@ -30,6 +30,8 @@ def scope(db,camera,start,end):
 
 def request(db,camera=None,start=None,end=None):
     scope(db,camera,start,end)
+    current=read(db)
+    if current['state'] in ('queued','running'):return current
     value={'id':secrets.token_hex(16),'state':'queued','camera':camera,'start':start,'end':end,'updated':int(time.time())}
     save(db,value)
     return value
@@ -62,7 +64,7 @@ def run(config,db,*,automatic,should_stop):
             if not automatic or job['state']=='paused':return None
             job=request(db)
     ident=job['id']
-    if not update(db,ident,state='running',scanned=0,accepted=0,unchanged=0,failed=0,skipped=0,removed=0,started=int(time.time()),error=None):return None
+    if not update(db,ident,state='running',scanned=0,accepted=0,unchanged=0,failed=0,skipped=0,removed=0,empty_removed=0,empty_deferred=0,started=int(time.time()),error=None):return None
     def stop():
         if should_stop() or not workers.writes_permitted():return True
         current=read(db)
@@ -80,7 +82,7 @@ def run(config,db,*,automatic,should_stop):
     try:
         dates=scope(db,job.get('camera'),job.get('start'),job.get('end'))
         result=workers.index_once(config,db,camera=job.get('camera'),dates=dates,should_stop=stop,progress=progress)
-        if not result.interrupted:update(db,ident,state='done',**asdict(result))
+        if not result.interrupted:update(db,ident,state='done',finished=int(time.time()),**asdict(result))
         return result
     except Exception as exc:
         update(db,ident,state='error',error=type(exc).__name__)
