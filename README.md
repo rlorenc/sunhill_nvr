@@ -12,9 +12,10 @@ System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wi
 | --- | --- |
 | Podgląd na żywo | Wielokamerowa siatka, ręczna zmiana położenia i rozmiaru kafelków, powiększanie dwuklikiem i powrót do poprzedniego układu, pełny ekran, dźwięk i wybór jakości zapamiętywany dla każdej kamery. |
 | Kamery IP | Dodawanie po adresie IP, wykrywanie strumieni RTSP przez ONVIF i znane ścieżki producentów, konfiguracja ręczna oraz identyfikacja modelu. |
-| Sterowanie kamerami | Reflektor, IR, zoom optyczny, ostrość, autofocus i zapisane pozycje PTZ w obsługiwanych urządzeniach Reolink. Funkcje zależą od możliwości kamery i protokołu. |
+| Sterowanie kamerami | Reflektor, IR, zoom optyczny, ostrość, autofocus, zapisane pozycje PTZ oraz wybrane ustawienia obrazu, dźwięku, detekcji i funkcji urządzenia. Wykrywanie dostępności per kamera Reolink. |
 | Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo (HEVC z oznaczeniem `hvc1` po rozpoznaniu kodeka), odbiór nagrań przez FTP oraz segmenty RTSP od 30 sekund do 60 minut. |
 | Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
+| Zdarzenia AI | Alarmy osoby, pojazdu i zwierzęcia z kamer Reolink (Baichuan lub CGI), filtrowanie, znaczniki i przejście do nagrania. Bez dodatkowych zdjęć, klipów ani analizy obrazu. |
 | Import nagrań | Przyrostowe indeksowanie istniejących plików MP4, wybór kamery i okresu, wstrzymywanie skanu, liczniki postępu i bezpieczne czyszczenie starych pustych plików. |
 | Eksport | Pobieranie oryginalnych plików, eksport wybranego fragmentu do MP4, zapisywanie klatek i ochrona nagrań przed rotacją. |
 | Magazyn danych | Konfigurowalne katalogi nagrań, bufora i eksportów, automatyczna rotacja, kontrola wolnego miejsca oraz wymiana dysku bez rejestrowania UUID. |
@@ -32,7 +33,7 @@ Sunhill NVR
     |-- FFmpeg       - nagrywanie, przetwarzanie i eksport
     |-- ProFTPD      - odbiór nagrań FTP
     |-- Python       - backend, API, indeksowanie i monitoring
-    |-- SQLite       - konfiguracja i indeks nagrań
+    |-- SQLite       - konfiguracja, indeks nagrań i metadane zdarzeń
     |-- Nginx        - dostęp HTTP/HTTPS
     `-- systemd      - zarządzanie usługami
     |
@@ -46,19 +47,23 @@ Aplikacja nie wymaga osobnego klienta ani zewnętrznego serwera bazy danych. Nag
 
 Platforma: **Ubuntu Server 26.04 LTS**, serwer fizyczny lub maszyna wirtualna. Potrzebne są uprawnienia root, dostęp do sieci kamer, przestrzeń na nagrania i dostęp do repozytoriów zależności.
 
-Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład dla 0.3.17:
+Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład dla 1.0.2:
 
 ```bash
-tar -xzf sunhill-nvr-0.3.17.tar.gz
-cd sunhill-nvr-0.3.17
+tar -xzf sunhill-nvr-1.0.2.tar.gz
+cd sunhill-nvr-1.0.2
 bash install.sh
 ```
+
+Bez argumentów instalator proponuje `nvr.local`, tworzy lokalny certyfikat TLS i katalogi pod `/opt/sunhill-nvr/media`. Po poprawnym uruchomieniu usług wypisuje `DONE`.
 
 Opcjonalnie podaj nazwę hosta:
 
 ```bash
 bash install.sh nvr.example.com
 ```
+
+Dla osobnego, wcześniej zamontowanego dysku można podać drugi argument, np. `bash install.sh nvr.example.com /home/store`.
 
 Instalator przygotowuje zależności, konfigurację usług i środowisko aplikacji. Pierwsze konto administratora utworzysz za pomocą kodu jednorazowego wyświetlonego podczas instalacji.
 
@@ -101,7 +106,15 @@ Polecenie interaktywnie poprosi o nazwę administratora, hasło i potwierdzenie 
 1. W **Administracja / Kamery** dodaj kamerę, podając adres IP i dane logowania. Wybierz RTSP, FTP lub podgląd bez nagrywania. W razie potrzeby skonfiguruj adresy RTSP ręcznie.
 2. W **Administracja / Nagrywanie** ustaw katalogi, długość segmentu RTSP i limity wolnej przestrzeni. Dla FTP skonfiguruj również wysyłkę nagrań w kamerze.
 3. W **Administracja / Użytkownicy** skonfiguruj konta i dostęp do kamer.
-4. W **Na żywo** wybierz jakość i układ podglądu; dodatkowe funkcje urządzenia znajdują się w menu kamery.
+4. W **Na żywo** wybierz jakość i układ podglądu; szybki włącznik LED znajduje się w menu kamery, jeżeli jest dostępny. Pozostałe ustawienia sprzętowe: **Administracja / Kamery / wybrana kamera / Ustawienia sprzętowe kamery**.
+
+### Zdarzenia AI
+
+W **Administracja / Kamery / wybrana kamera / Detekcja i zdarzenia AI** wybierz rejestrowane typy alarmów i retencję metadanych (domyślnie 365 dni). Domyślnie odbierane są alarmy osoby, pojazdu i zwierzęcia, jeżeli kamera udostępnia je przez Baichuan TCP 9000 lub CGI HTTP. Wykorzystywane są istniejące dane logowania RTSP do samodzielnej kamery. Stan połączenia jest widoczny w tym panelu. Nie zmieniamy stref ani ustawień AI urządzenia; detekcja nadal odbywa się na kamerze. CGI jest odpytywane co 3 s i może nie zarejestrować krótszych alarmów. Czas zdarzenia to czas odebrania alarmu przez NVR.
+
+W **Zdarzenia** wybierz dzień, kamerę i typ. Odtwórz przechodzi do istniejącego segmentu; jeżeli segment nie został jeszcze zindeksowany lub został usunięty, aplikacja informuje o braku nagrania. Zdarzenia są również widoczne na osi archiwum. W 1.0.2 nie pobieramy jeszcze natywnych współrzędnych obiektu z dodatkowych metadanych strumienia Reolink. Nakładka w archiwum rysuje tylko rzeczywiście przekazane współrzędne, np. przez istniejący autoryzowany endpoint integracji zdarzeń (`box`: `[x,y,w,h]`, wartości znormalizowane do 0–1, opcjonalnie `zone`). Alarmy bez współrzędnych nie mają ramki. Nie zapisujemy miniatur, obrazów ani dodatkowych klipów zdarzeń.
+
+W **Administracja / Stan systemu** sprawdzisz rozmiar jednej dotychczasowej bazy SQLite, WAL, liczbę nagrań i zdarzeń, wolne strony oraz uruchomisz ograniczoną czasowo kontrolę integralności i optymalizację statystyk (bez VACUUM). Retencja metadanych Reolink jest oddzielna od rotacji plików wideo; historyczne zdarzenia Home Assistant nie są przez nią usuwane. Aktualizacja rozszerza istniejący schemat, czysta instalacja inicjuje ten sam schemat automatycznie.
 
 ## Magazyn i import nagrań
 

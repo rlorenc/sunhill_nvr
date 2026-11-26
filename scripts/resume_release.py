@@ -38,6 +38,19 @@ def prepare(root: Path,system: Path,source: Path, *, run=subprocess.run) -> str:
             if not os.path.lexists(p):continue
             trusted_file(p)
             variants={new[name],old.get(name,'')}
+            # 0.2.8 predates optional media mounts and automatic directory
+            # preparation. Accept only the precise earlier generated form,
+            # not arbitrary edits to installed unit files.
+            for variant in tuple(variants):
+                if not variant:continue
+                lines=[]
+                for line in variant.splitlines(keepends=True):
+                    if line.startswith('ExecStartPre=+/usr/bin/python3 -m sunhill_nvr.cli prepare-storage') or line.startswith('InaccessiblePaths='):
+                        continue
+                    if line.startswith('ReadWritePaths='):
+                        line=line.replace(' -"',' "').replace('ReadWritePaths=-"','ReadWritePaths="')
+                    lines.append(line)
+                variants.add(''.join(lines))
             if name=='sunhill-go2rtc.service':
                 # 0.2.4/0.2.5 used a failing pre-start check, which can loop.
                 variants.add(new[name].replace('ExecCondition=', 'ExecStartPre=',1))

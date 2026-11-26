@@ -301,8 +301,8 @@ function cameraHealthText(camera){
 function view(which) {
   const cameraWasHidden=$('camera-view').hidden;
   if(which!=='archive'&&!$('archive-view').hidden){playbackGeneration++;archiveLoadGeneration++;calendarGeneration++;archiveAutoRecovery=null;$('archive-calendar-panel').open=false;clearTimeout(previewTimer);$('timeline-preview').hidden=true;$('archive-player').pause();clearArchiveBuffers();}
-  if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';
-  for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
+  if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';$('events-view').hidden=which!=='events';
+  for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-events',which==='events'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
   if(which==='cameras'&&cameraWasHidden)renderCameras();
   else if(which!=='cameras'){
     closeLiveMenu();stopLiveLayoutGesture();liveLayoutEditing=false;
@@ -372,30 +372,31 @@ if(typeof document.addEventListener==='function'){
 }
 // Prefetch one camera at a time; do not starve Gunicorn or restart live players.
 const deviceCache=new Map();let deviceQueue=Promise.resolve();
-function loadDeviceInfo(camera,force=false){
-  const owner=me,key=String(owner?.id??owner?.username??owner?.role)+':'+camera.id+':'+camera.slug;
+function loadDeviceInfo(camera,force=false,extended=false){
+  const owner=me,key=String(owner?.id??owner?.username??owner?.role)+':'+camera.id+':'+camera.slug+(extended?':settings':':controls');
   const old=deviceCache.get(key);
   if(!force&&old&&(old.pending||Date.now()-old.time<120000))return old.promise;
   const entry={pending:true,time:Date.now()};
-  entry.promise=deviceQueue.then(()=>{if(me!==owner||me?.role!=='admin')throw new Error('Sesja została zmieniona.');return api('/api/cameras/'+camera.id+'/controls');});
+  entry.promise=deviceQueue.then(()=>{if(me!==owner||me?.role!=='admin')throw new Error('Sesja została zmieniona.');return api('/api/cameras/'+camera.id+(extended?'/settings':'/controls'));});
   deviceQueue=entry.promise.catch(()=>{});deviceCache.set(key,entry);
   entry.promise.then(()=>{entry.pending=false;entry.time=Date.now();},()=>{entry.pending=false;entry.time=Date.now();});
   if(deviceCache.size>256){for(const [k,v] of deviceCache)if(!v.pending&&k!==key){deviceCache.delete(k);break;}}
   return entry.promise;
 }
 
+function invalidateDeviceInfo(camera){for(const key of deviceCache.keys())if(key.endsWith(':'+camera.id+':'+camera.slug+':settings')||key.endsWith(':'+camera.id+':'+camera.slug+':controls'))deviceCache.delete(key);}
 function deviceControlPanel(camera){
   const panel=element('details',null,'device-controls');
-  const summary=element('summary','Informacje i sterowanie');panel.append(summary);const identity=element('p','Model: wykrywanie…','device-model');panel.append(identity);
+  const summary=element('summary','Ustawienia sprzętowe kamery');panel.append(summary);const identity=element('p','Model: wykrywanie…','device-model');panel.append(identity);
   const status=element('p','');status.setAttribute('role','status');
   const fields=element('div',null,'device-control-fields');
   const refresh=element('button','Odśwież stan');refresh.type='button';
   panel.append(status,fields,refresh);
-  const url='/api/cameras/'+camera.id+'/controls';let busy=false;
+  const url='/api/cameras/'+camera.id+'/settings';let busy=false,loaded=false;
   function disable(value){refresh.disabled=value;for(const el of fields.querySelectorAll('button,input,select'))el.disabled=value;}
   async function send(control,value){
     if(busy)return;busy=true;disable(true);status.textContent='Wysyłanie polecenia…';
-    try{await api(url,'POST',{control,value});status.textContent='Kamera przyjęła polecenie. Odczytywanie stanu…';try{await read(true);}catch(error){status.textContent='Polecenie przyjęte; odczyt stanu nie powiódł się. '+error.message;}}
+    try{await api(url,'POST',{control,value});invalidateDeviceInfo(camera);status.textContent='Kamera przyjęła polecenie. Odczytywanie stanu…';try{await read(true);}catch(error){status.textContent='Polecenie przyjęte; odczyt stanu nie powiódł się. '+error.message;}}
     catch(error){status.textContent=error.message;}
     finally{busy=false;disable(false);}
   }
@@ -408,16 +409,16 @@ function deviceControlPanel(camera){
     group.append(caption,slider,apply);return group;
   }
   async function read(force=false){
-    const result=await loadDeviceInfo(camera,force);const c=result.controls||{};fields.replaceChildren();
+    const result=await loadDeviceInfo(camera,force,true);const c=result.controls||{};const settings=result.settings||[];fields.replaceChildren();
     const model=result.device?.model||'';const manufacturer=result.device?.manufacturer||'';
     identity.textContent=[manufacturer&& !model.toLowerCase().startsWith(manufacturer.toLowerCase())?manufacturer:'',model].filter(Boolean).join(' ')||'Model niedostępny przez API kamery';
-    summary.textContent=Object.keys(c).length?'Sterowanie kamerą':'Informacje o kamerze';
+    summary.textContent='Ustawienia sprzętowe kamery';
     if(model)summary.textContent+=' · '+model;
     if(result.device?.hardware)identity.textContent+=' · '+result.device.hardware;
     if(result.device?.firmware)identity.textContent+=' · FW '+result.device.firmware;
     if(result.device?.protocol)identity.textContent+=' · '+result.device.protocol;
     else if(result.device?.identity_source)identity.textContent+=' · '+result.device.identity_source;
-    refresh.hidden=!Object.keys(c).length&&!result.partial;
+    refresh.hidden=false;
     if(c.light_available===true&&typeof c.light!=='boolean')fields.append(button('Włącz reflektor','light',true),button('Wyłącz reflektor','light',false));
     if(typeof c.light==='boolean')fields.append(button(c.light?'Wyłącz reflektor':'Włącz reflektor','light',!c.light));
     if(Number.isInteger(c.brightness))fields.append(range('Jasność reflektora (%)','brightness',{value:c.brightness,min:0,max:100}));
@@ -428,14 +429,33 @@ function deviceControlPanel(camera){
     }
     if(c.zoom)fields.append(range('Zoom optyczny','zoom',c.zoom));if(typeof c.autofocus==='boolean')fields.append(button(c.autofocus?'Wyłącz autofocus':'Włącz autofocus','autofocus',!c.autofocus));if(c.focus)fields.append(range('Ostrość','focus',c.focus));
     if(Array.isArray(c.presets)&&c.presets.length){const label=element('label','Pozycja PTZ');const select=element('select');select.setAttribute('aria-label','Pozycja PTZ');for(const preset of c.presets)select.add(new Option(preset.name||'Pozycja '+preset.id,String(preset.id)));const go=element('button','Przejdź do pozycji');go.type='button';go.addEventListener('click',()=>send('preset',Number(select.value)));label.append(select,go);fields.append(label);}
-    status.textContent=Object.keys(c).length?(result.partial?'Nie wszystkie funkcje odpowiedziały. Dostępne sterowanie poniżej.':'Stan odczytany z kamery.'):(result.partial?'Nie udało się odczytać możliwości kamery. Spróbuj ponownie.':'Kamera nie zgłasza obsługiwanych funkcji sterowania.');
+    const groups=new Map();
+    const translations={Auto:'Automatycznie',Color:'Kolor','Black&White':'Czarno-biały',On:'Włączona',Off:'Wyłączona',BackLightControl:'BLC',DynamicRangeControl:'WDR'};
+    for(const info of settings){
+      if(!groups.has(info.group)){const section=element('fieldset',null,'device-settings-group');section.append(element('legend',info.group));fields.append(section);groups.set(info.group,section);}
+      const group=groups.get(info.group);
+      if(info.type==='bool')group.append(button(info.label+': '+(info.value?'włączone':'wyłączone')+' (zmień)',info.key,!info.value));
+      else if(info.type==='range')group.append(range(info.label,info.key,info));
+      else if(info.type==='select'){const label=element('label',info.label);const select=element('select');select.setAttribute('aria-label',info.label);for(const option of info.options)select.add(new Option(translations[option]||option,option));select.value=info.value;const apply=element('button','Zastosuj');apply.type='button';apply.addEventListener('click',()=>send(info.key,select.value));label.append(select,apply);group.append(label);}
+    }
+    loaded=true;
+    status.textContent=(Object.keys(c).length||settings.length)?(result.partial?'Nie wszystkie funkcje odpowiedziały. Dostępne sterowanie poniżej.':'Stan odczytany z kamery.'):(result.partial?'Nie udało się odczytać możliwości kamery. Spróbuj ponownie.':'Kamera nie zgłasza obsługiwanych funkcji sterowania.');
     refresh.textContent='Odśwież stan';if(result.message){
       if(!Object.keys(c).length&&model)status.textContent='Brak potwierdzonych funkcji sterowania. '+result.message;
       else status.textContent=result.message;
     }
   }
   async function load(force=false){if(busy)return;busy=true;disable(true);status.textContent='Wykrywanie możliwości kamery…';try{await read(force);}catch(error){identity.textContent='Model niedostępny przez API kamery';status.textContent=error.message;}finally{busy=false;disable(false);}}
-  refresh.addEventListener('click',()=>load(true));load();return panel;
+  refresh.addEventListener('click',()=>load(true));panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)load();});return panel;
+}
+function liveLightControl(camera){
+  const panel=element('div',null,'live-light');panel.hidden=true;
+  let busy=false;const url='/api/cameras/'+camera.id+'/controls';
+  function render(result){const c=result.controls||{};panel.replaceChildren();panel.hidden=typeof c.light!=='boolean'&&c.light_available!==true;if(panel.hidden)return;
+    function add(label,value){const b=element('button',label);b.type='button';b.addEventListener('click',async()=>{if(busy)return;busy=true;for(const el of panel.querySelectorAll('button'))el.disabled=true;try{await api(url,'POST',{control:'light',value});invalidateDeviceInfo(camera);render(await loadDeviceInfo(camera,true));}catch(error){notify(error.message,'error');}finally{busy=false;for(const el of panel.querySelectorAll('button'))el.disabled=false;}});panel.append(b);}
+    if(typeof c.light==='boolean')add(c.light?'Wyłącz LED':'Włącz LED',!c.light);else{add('Włącz LED',true);add('Wyłącz LED',false);}
+  }
+  loadDeviceInfo(camera).then(render,()=>{});return panel;
 }
 function renderCameras() {
   const area=$('cameras');closeLiveMenu();stopLiveLayoutGesture();for(const player of area.querySelectorAll('video-stream'))closeLivePlayer(player);area.replaceChildren();
@@ -550,16 +570,14 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     function changeQuality(){selected=quality.value;remember();saveLiveQuality(camera,selected);compatibility=false;compat.textContent='Tryb zgodności H.264';if(!video)return;const alias=selectedLiveAlias(camera,selected,enlarged);if(alias!==currentAlias)replacePlayer(alias);}
     quality.addEventListener('change',changeQuality);actions.append(quality,sound);
     const retry=element('button','Połącz ponownie');retry.type='button';retry.hidden=!camera.enabled;retry.addEventListener('click',()=>{if(video)replacePlayer(currentAlias);else{ensureLivePlayer();if(livePlayerReady())renderCameras();}});actions.append(retry);
-    const expand=element('button',enlarged?'Zmniejsz':'Powiększ');expand.hidden=!camera.enabled;
-    function toggleExpanded(){enlarged=card.classList.toggle('expanded');expand.textContent=enlarged?'Zmniejsz':'Powiększ';remember();}
-    expand.addEventListener('click',toggleExpanded);actions.append(expand);
+    function toggleExpanded(){enlarged=card.classList.toggle('expanded');remember();}
     const button=element('button','Archiwum');
     button.addEventListener('click',()=>{closeLiveMenu();return openArchive(camera);});actions.append(button);
     const volume=element('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.05';volume.value='1';volume.setAttribute('aria-label','Głośność kamery '+camera.name);
     const volumeLabel=element('label','Głośność','live-volume');volumeLabel.hidden=!camera.enabled;volumeLabel.append(volume);actions.append(volumeLabel);
     volume.addEventListener('input',()=>{if(video?.video)video.video.volume=Number(volume.value);});
     const full=element('button','Pełny ekran');full.type='button';full.hidden=!camera.enabled;full.addEventListener('click',()=>{closeLiveMenu();const native=video?.video;if(document.fullscreenElement){document.exitFullscreen?.();}else if(card.requestFullscreen){card.requestFullscreen().catch(()=>{if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();else notify('Pełny ekran niedostępny.');});}else if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();});actions.append(full);
-    if(camera.enabled&&me&&me.role==='admin')actions.append(deviceControlPanel(camera));
+    if(camera.enabled&&me&&me.role==='admin')actions.append(liveLightControl(camera));
     actions.append(element('p',cameraHealthText(camera),'live-health-detail'),diagnostics);card.append(actions,audioPrompt);installLiveLayoutHandles(card,camera);area.append(card);
   }
   if(!visible.length){
@@ -572,13 +590,13 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
   }
   applyLiveLayout();
 }
-async function openArchive(camera) {
+async function openArchive(camera, date=null, event=null) {
   exportViewGeneration++;if(exportTimer!==null)clearInterval(exportTimer);exportTimer=null;exportSubmitting=false;protectionSubmitting=false;
   clearTimeout(previewTimer);$('timeline-preview').hidden=true;
   clearTimelineSelection();
   activeCamera=camera;const selector=$('archive-camera-select');selector.replaceChildren();for(const item of cameras)selector.add(new Option(item.name,String(item.id)));selector.value=String(camera.id);$('archive-selection').hidden=!camera.may_download;resetArchiveContents();loadedArchiveDate=null;$('archive-title').textContent='Archiwum - '+camera.name;
-  playbackGeneration++;$('archive-date').value=cameraDay();$('archive-timezone').textContent='Strefa czasowa kamer: '+me.timezone;$('archive-player').pause();$('archive-player').removeAttribute('src');if($('archive-player').load)$('archive-player').load();
-  $('archive-month').value=$('archive-date').value.slice(0,7);$('calendar-days').replaceChildren();$('archive-calendar-panel').open=false;$('save-frame').hidden=!camera.may_download;$('export-panel').hidden=!camera.may_download;$('export-result').replaceChildren();$('archive-player').muted=true;updateArchiveControls();view('archive');await loadArchive(true);
+  playbackGeneration++;$('archive-date').value=date||cameraDay();$('archive-timezone').textContent='Strefa czasowa kamer: '+me.timezone;$('archive-player').pause();$('archive-player').removeAttribute('src');if($('archive-player').load)$('archive-player').load();
+  $('archive-month').value=$('archive-date').value.slice(0,7);$('calendar-days').replaceChildren();$('archive-calendar-panel').open=false;$('save-frame').hidden=!camera.may_download;$('export-panel').hidden=!camera.may_download;$('export-result').replaceChildren();$('archive-player').muted=true;updateArchiveControls();view('archive');const loaded=await loadArchive(!event);if(loaded&&event&&activeCamera===camera&&!$('archive-view').hidden&&$('archive-date').value===date)seekToEvent(event);
 }
 async function refreshExports(){
   if(exportListPending){exportListRefreshAgain=true;return;}
@@ -653,7 +671,7 @@ $('archive-calendar-panel').addEventListener('keydown',event=>{if(event.key==='E
 function resetArchiveContents(){
   clearArchiveBuffers();archiveAutoRecovery=null;setArchiveNote('');
   records=[];eventMarkers=[];recordPosition=0;archiveRecordId=null;archiveRequestedDate=null;archiveScrubbing=false;
-  $('timeline-track').replaceChildren();$('events').replaceChildren();
+  $('timeline-track').replaceChildren();$('events').replaceChildren();if($('archive-detection-overlay'))$('archive-detection-overlay').hidden=true;
   $('timeline-position').value='0';$('timeline-time').textContent='00:00:00';$('archive-status').textContent='';$('archive-events-status').textContent='';
   updateArchiveControls();
 }
@@ -784,6 +802,7 @@ async function diagnoseArchiveFailure(record,error,generation){
   archiveAutoRecovery=null;setArchiveNote(message);$('archive-status').textContent=archiveRecordId===record.id?'Wybierz inny czas lub kliknij Odtwórz, aby ponowić próbę.':'Poprzedni fragment pozostaje dostępny. Wybierz czas ponownie.';updateArchiveControls();
 }
 function playRecord(index,offset=0,automatic=false,keepPaused=false) {
+  if($('archive-detection-overlay'))$('archive-detection-overlay').hidden=true;
   const record=records[index];if(!record)return;
   if(!automatic){archiveAutoRecovery=null;setArchiveNote('');}
   if(archiveSwitch){archiveSwitch.cancel();archiveSwitch=null;}
@@ -846,10 +865,11 @@ function bindArchiveMedia(video){
   video.addEventListener('keydown',event=>{if(active()&&(event.key===' '||event.key==='Enter')){event.preventDefault();if(archiveRecordId!==null)$('archive-play').click();}});
   for(const event of ['play','pause','volumechange'])video.addEventListener(event,()=>{if(active())updateArchiveControls();});
   video.addEventListener('playing',()=>{if(active()&&!archiveSwitch){archiveAutoRecovery=null;if($('archive-playback-note').textContent.startsWith('Przygotowywanie zgodnego nagrania HEVC'))setArchiveNote('');$('archive-status').textContent='';updateArchiveControls();warmArchiveNeighbours();}});
-  video.addEventListener('waiting',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null)$('archive-status').textContent='Buforowanie obrazu…';});
+  video.addEventListener('waiting',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null){$('archive-status').textContent='Buforowanie obrazu…';$('archive-detection-overlay').hidden=true;}});
+  video.addEventListener('seeking',()=>{if(active())$('archive-detection-overlay').hidden=true;});
   video.addEventListener('error',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null){const record=records.find(item=>item.id===archiveRecordId);if(record)void diagnoseArchiveFailure(record,video.error,playbackGeneration);}});
   video.addEventListener('ended',()=>{if(active()&&!archiveSwitch)playNextRecording().catch(error=>notify(error.message,'error'));});
-  video.addEventListener('timeupdate',()=>{if(!active()||archiveScrubbing||archiveSwitch)return;const record=records[recordPosition];if(!record||!video.currentSrc||!record.utc_first||record.utc_second)return;const instant=Date.parse(record.utc_first)+video.currentTime*1000;if(!Number.isFinite(instant)||cameraDay(instant)!==$('archive-date').value)return;const position=eventSeconds(instant/1000);$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);warmArchiveNeighbours();});
+  video.addEventListener('timeupdate',()=>{if(!active()||archiveScrubbing||archiveSwitch)return;const record=records[recordPosition];if(!record||!video.currentSrc||!record.utc_first||record.utc_second)return;const instant=Date.parse(record.utc_first)+video.currentTime*1000;if(!Number.isFinite(instant)||cameraDay(instant)!==$('archive-date').value)return;drawDetectionOverlay(video,instant/1000);const position=eventSeconds(instant/1000);$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);warmArchiveNeighbours();});
 }
 bindArchiveMedia($('archive-player'));
 function cameraDay(at=Date.now()){
@@ -905,25 +925,72 @@ function renderTimeline(){
   const spans=records.flatMap(timelineSpans).sort((a,b)=>a[0]-b[0]);const merged=[];for(const span of spans){const last=merged[merged.length-1];if(last&&span[0]<=last[1]+0.01)last[1]=Math.max(last[1],span[1]);else merged.push(span.slice());}
   for(const [start,end] of merged){const block=element('span',null,'timeline-segment');block.style.left=(start/86400*100)+'%';block.style.width=((end-start)/86400*100)+'%';track.append(block);}
   const selected=$('event-filter').value;
-  for(const event of eventMarkers.filter(item=>selected==='all'||item.type===selected)){const position=eventSeconds(event.timestamp);const marker=element('span',null,'timeline-event');marker.style.left=(position/86400*100)+'%';marker.title=event.type;track.append(marker);}
+  for(const event of eventMarkers.filter(item=>selected==='all'||item.type===selected)){const position=eventSeconds(event.timestamp);const marker=element('span',null,'timeline-event');marker.style.left=(position/86400*100)+'%';marker.title=event.type;marker.dataset.kind=event.type;track.append(marker);}
   if(records.some(r=>r.utc_second))notify('Uwaga: część nagrań ma niejednoznaczną godzinę po zmianie czasu.');
 }
 function eventSeconds(timestamp){const pieces=new Intl.DateTimeFormat('en-GB',{timeZone:me.timezone,hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(timestamp*1000));const get=(type)=>Number(pieces.find(p=>p.type===type).value);return get('hour')*3600+get('minute')*60+get('second');}
+const eventLabels={motion:'Ruch',person:'Człowiek',vehicle:'Pojazd',animal:'Zwierzę',face:'Twarz',package:'Paczka',visitor:'Dzwonek',tamper:'Sabotaż'};
+function eventLabel(kind){return eventLabels[kind]||kind;}
+function seekToEvent(event){
+  const position=eventSeconds(event.timestamp),fold=event.fold===0||event.fold===1?String(event.fold):'';
+  timelineRequestGeneration++;clearTimeout(previewTimer);$('timeline-preview').hidden=true;
+  $('timeline-fold').value=fold;$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);rememberTimelineSelection(position);
+  const index=records.findIndex(r=>!r.utc_second&&r.utc_first&&Date.parse(r.utc_first)/1000<=event.timestamp&&event.timestamp<Date.parse(r.utc_first)/1000+r.duration);
+  if(index>=0){if(event.box&&!eventMarkers.some(e=>e.id===event.id))eventMarkers=[...eventMarkers,event];playRecord(index,event.timestamp-Date.parse(records[index].utc_first)/1000);}else notify('Brak jednoznacznego nagrania dla tego zdarzenia.');
+}
 function renderEvents(){
-  const area=$('events');area.replaceChildren();const selected=$('event-filter').value;const labels={motion:'Ruch',person:'Osoba',vehicle:'Pojazd',animal:'Zwierzę'};
+  const area=$('events');area.replaceChildren();const selected=$('event-filter').value;
   for(const event of eventMarkers.filter(e=>selected==='all'||e.type===selected)){
     const fold=event.fold===0||event.fold===1?String(event.fold):'';
     const suffix=fold===''?'':` (${Number(fold)+1}. wystąpienie)`;
-    const button=element('button',clock(eventSeconds(event.timestamp))+suffix+' - '+(labels[event.type]||event.type));
-    button.addEventListener('click',()=>{
-      const position=eventSeconds(event.timestamp);
-      timelineRequestGeneration++;clearTimeout(previewTimer);$('timeline-preview').hidden=true;
-      $('timeline-fold').value=fold;$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);
-      rememberTimelineSelection(position);
-      const index=records.findIndex(r=>!r.utc_second&&r.utc_first&&Date.parse(r.utc_first)/1000<=event.timestamp&&event.timestamp<Date.parse(r.utc_first)/1000+r.duration);
-      if(index>=0)playRecord(index,event.timestamp-Date.parse(records[index].utc_first)/1000);else notify('Brak jednoznacznego nagrania dla tego zdarzenia.');
-    });area.append(button);
+    const duration=event.ended_at!=null?` · ${Math.max(0,event.ended_at-event.timestamp)} s`:'';
+    const button=element('button',clock(eventSeconds(event.timestamp))+suffix+' - '+eventLabel(event.type)+duration+(event.zone?' · '+event.zone:''));
+    button.addEventListener('click',()=>seekToEvent(event));area.append(button);
   }
+}
+// A box belongs to a single observation, never the whole event duration.
+// Render only close to that observation and align to the actual contained video.
+let boxEventSource=null,boxEvents=[];
+function drawDetectionOverlay(video,instant){
+  const overlay=$('archive-detection-overlay');if(!overlay)return;overlay.hidden=true;overlay.replaceChildren();
+  if(!video.videoWidth||!video.videoHeight||!video.clientWidth||!video.clientHeight||!Number.isFinite(instant))return;
+  if(boxEventSource!==eventMarkers){boxEventSource=eventMarkers;boxEvents=eventMarkers.filter(e=>Array.isArray(e.box)&&e.box.length===4);}
+  const observed=boxEvents.filter(e=>Math.abs(e.timestamp-instant)<=0.5).slice(0,16);
+  if(!observed.length)return;
+  const scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight),w=video.videoWidth*scale,h=video.videoHeight*scale;
+  const x=(video.clientWidth-w)/2,y=(video.clientHeight-h)/2;
+  for(const e of observed){const [bx,by,bw,bh]=e.box;if(![bx,by,bw,bh].every(Number.isFinite)||bx<0||by<0||bw<=0||bh<=0||bx+bw>1.000001||by+bh>1.000001)continue;
+    const box=element('span',eventLabel(e.type),'detection-box');box.dataset.kind=e.type;box.style.left=(x+bx*w)+'px';box.style.top=(y+by*h)+'px';box.style.width=(bw*w)+'px';box.style.height=(bh*h)+'px';overlay.append(box);}
+  overlay.hidden=!overlay.children.length;
+}
+let eventsPageEpoch=0,eventsCursor=null;
+async function refreshEventPage(more=false){
+  if(!me||$('events-view').hidden)return;
+  const epoch=++eventsPageEpoch,date=$('events-date').value,camera=$('events-camera').value,type=$('events-type').value;
+  if(!more){eventsCursor=null;$('events-list').replaceChildren();}
+  $('events-next').hidden=true;$('events-page-status').textContent='Wczytywanie zdarzeń…';
+  try{const query=new URLSearchParams({date});if(camera)query.set('camera',camera);if(type)query.set('type',type);if(more&&eventsCursor)query.set('cursor',eventsCursor);
+    const data=await api('/api/events?'+query.toString());if(epoch!==eventsPageEpoch||$('events-view').hidden)return;
+    for(const e of data.events){const row=element('div',null,'event-history-row');const description=element('span',`${clock(eventSeconds(e.timestamp))} · ${e.camera_name} · ${eventLabel(e.type)}`+(e.zone?' · '+e.zone:'')+(e.ended_at!=null?` · ${Math.max(0,e.ended_at-e.timestamp)} s`:''));const play=element('button','Odtwórz');play.type='button';play.addEventListener('click',async()=>{const selected=cameras.find(c=>c.id===e.camera_id);if(selected)await openArchive(selected,cameraDay(e.timestamp*1000),e);});row.append(description,play);$('events-list').append(row);}
+    eventsCursor=data.next_cursor;$('events-next').hidden=!eventsCursor;$('events-page-status').textContent=$('events-list').children.length?'':'Brak zdarzeń w wybranym zakresie.';
+  }catch(error){if(epoch===eventsPageEpoch)$('events-page-status').textContent=error.message;}
+}
+$('show-events').addEventListener('click',()=>{view('events');$('events-date').value=cameraDay();const picker=$('events-camera');picker.replaceChildren();picker.add(new Option('Wszystkie kamery',''));for(const c of cameras)picker.add(new Option(c.name,String(c.id)));picker.value='';void refreshEventPage();});
+for(const id of ['events-date','events-camera','events-type'])$(id).addEventListener('change',()=>refreshEventPage());
+$('events-refresh').addEventListener('click',()=>refreshEventPage());$('events-next').addEventListener('click',()=>refreshEventPage(true));
+$('database-refresh').addEventListener('click',async()=>{try{const d=await api('/api/settings/database');$('database-status').textContent=`SQLite ${d.journal.toUpperCase()} · ${(d.bytes/1e6).toFixed(1)} MB · WAL ${(d.wal_bytes/1e6).toFixed(1)} MB · Nagrania ${d.recordings} · Zdarzenia ${d.events} · Wolne strony ${d.free_pages}/${d.page_count}`;}catch(error){$('database-status').textContent=error.message;}});
+for(const [id,operation] of [['database-check','quick_check'],['database-optimize','optimize']])$(id).addEventListener('click',async()=>{const status=$('database-maintenance-status');$('database-check').disabled=$('database-optimize').disabled=true;status.textContent='Trwa operacja bazy…';try{const result=await api('/api/settings/database/maintenance','POST',{operation});status.textContent=result.ok?(operation==='quick_check'?'Kontrola integralności: OK.':'Optymalizacja statystyk zakończona.'):'Kontrola integralności wykazała nieprawidłowości.';}catch(error){status.textContent=error.message;}finally{$('database-check').disabled=$('database-optimize').disabled=false;}});
+function eventSettingsPanel(camera){
+  const panel=element('details');panel.append(element('summary','Detekcja i zdarzenia AI'));
+  const status=element('p','Odczyt ustawień…'),fields=element('div');panel.append(status,fields);let busy=false;
+  const endpoint=`/api/cameras/${camera.id}/event-settings`;
+  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Rejestruj zdarzenia kamery','inline');label.prepend(enabled);fields.append(label);
+    const types=[];for(const [value,title] of Object.entries(eventLabels)){const check=element('input');check.type='checkbox';check.checked=cfg.types.includes(value);const l=element('label',title,'inline');l.prepend(check);fields.append(l);types.push([value,check]);}
+    const days=labeledInput('Retencja metadanych (dni)','number',cfg.retention_days);days.input.min='1';days.input.max='3650';fields.append(days.label);
+    const save=element('button','Zapisz ustawienia zdarzeń');save.type='button';save.addEventListener('click',async()=>{if(busy)return;busy=true;save.disabled=true;try{await api(endpoint,'PATCH',{enabled:enabled.checked,types:types.filter(x=>x[1].checked).map(x=>x[0]),retention_days:Number(days.input.value)});status.textContent='Zapisano. Zmiany zostaną zastosowane w tle.';}catch(error){status.textContent=error.message;}finally{busy=false;save.disabled=false;}});const refresh=element('button','Odśwież status');refresh.type='button';refresh.addEventListener('click',load);fields.append(save,refresh);
+    const st=cfg.status;status.textContent=!cfg.enabled?'Rejestracja wyłączona.':st?`${st.state==='active'&&Date.now()/1000-st.checked_at<90?'Połączono':'Brak aktualnego połączenia'} · ${st.transport||'wykrywanie'} · ${new Date(st.checked_at*1000).toLocaleString()}`:'Oczekiwanie na wykrycie obsługi.';
+  }catch(error){status.textContent=error.message;}finally{busy=false;}}
+  panel.addEventListener('toggle',()=>{if(panel.open)void load();});return panel;
 }
 $('event-filter').addEventListener('change',()=>{renderEvents();renderTimeline();});
 $('event-token-create').addEventListener('click',async()=>{if(!window.confirm('Utworzenie tokenu unieważni poprzedni. Kontynuować?'))return;try{const result=await api('/api/integrations/events/token','POST',{});$('event-token').value=result.token;notify('Token pokazany tylko teraz. Skopiuj go w bezpieczne miejsce.');}catch(error){notify(error.message,'error');}});
@@ -1078,6 +1145,7 @@ async function refreshAdmin() {
     if(onvif.checked!==null&&onvif.fresh===false)clockStatus='Brak aktualnego odczytu czasu ONVIF.';
     else if(onvif.error)clockStatus=onvif.error;else if(onvif.checked!==null&&onvif.offset!==null)clockStatus=`Różnica czasu: ${Number(onvif.offset).toFixed(1)} s. Sprawdzono: ${new Date(onvif.checked*1000).toLocaleString('pl-PL')}.`;
     clockDetails.append(element('p',clockStatus));const clockSave=element('button','Zapisz ustawienia ONVIF');clockSave.type='button';clockSave.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}/onvif`,'PATCH',{url:endpoint.input.value,username:onvifUser.input.value,password:onvifPassword.input.value,auth_mode:auth.value});onvifPassword.input.value='';notify('Ustawienia ONVIF zapisane.');}catch(error){notify(error.message,'error');}});clockDetails.append(clockSave);details.append(clockDetails);
+    if(camera.enabled)details.append(deviceControlPanel(camera));details.append(eventSettingsPanel(camera));
     const remove=element('button','Usuń kamerę z konfiguracji');remove.type='button';remove.addEventListener('click',async()=>{if(!window.confirm('Usunąć kamerę z konfiguracji? Pliki nagrań pozostaną na dysku.'))return;try{await api(`/api/cameras/${camera.id}`,'DELETE');await refreshCameras();await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(remove);cameraBox.append(details);
   }
   $('overview-cameras').textContent=adminCameras.filter(c=>c.enabled).length+' / '+adminCameras.length;$('overview-rtsp').textContent=String(adminCameras.filter(c=>c.enabled&&c.recording==='rtsp').length);$('overview-ftp').textContent=String(adminCameras.filter(c=>c.enabled&&c.recording==='ftp').length);filterAdminCameras();

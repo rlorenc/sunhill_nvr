@@ -97,3 +97,22 @@ class ResumeReleaseTests(unittest.TestCase):
     self.assertEqual(os.readlink(self.root/'current'),'releases/'+__version__)
     self.assertTrue(previous.is_dir());self.assertEqual(self.db.read_bytes(),b'original database untouched')
     self.assertEqual(self.apply(),'nvr.example.com')
+
+ def test_resume_real_028_unit_templates_from_checked_fixture(self):
+    import tarfile,types
+    fixture=root_dir/'tests/fixtures/sunhill-0.2.8-resume.tar.gz'
+    self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(),'243aa331cd8ef6f1058e40b23fefe24a0b522720d92677ab5593a5f382eb5a6d')
+    with tarfile.open(fixture,'r:gz') as tar:
+        module=types.ModuleType('sunhill_nvr._ci_old_units');module.__package__='sunhill_nvr'
+        exec(compile(tar.extractfile('previous/src/sunhill_nvr/units.py').read(),'fixture:units.py','exec'),module.__dict__)
+    cfg=load(self.root/'config/config.json');historical=module.render(cfg)
+    previous=self.root/'releases/0.2.8';previous.mkdir()
+    (self.root/'current').unlink();(self.root/'current').symlink_to('releases/0.2.8')
+    for name,content in historical.items():(self.system/name).write_text(content)
+    (self.root/'control/upgrade/managed-units.json').write_text(json.dumps(sorted(historical)))
+    (self.root/'recovery/app/sunhill_nvr/__init__.py').write_text('__version__ = "0.2.8"\n')
+    self.assertEqual(self.apply(),'nvr.example.com')
+    self.assertEqual(self.db.read_bytes(),b'original database untouched')
+    self.assertTrue(previous.is_dir())
+    self.assertEqual(os.readlink(self.root/'current'),'releases/'+__version__)
+    for name,content in self.new.items():self.assertEqual((self.system/name).read_text(),content)

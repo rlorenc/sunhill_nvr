@@ -70,6 +70,14 @@ class WebTests(unittest.TestCase):
         r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');self.assertNotIn(b'secret',b)
         r,b=self.call(url,'POST',{'control':'light','value':True},cookie,csrf);self.assertEqual(r['status'],'200 OK');apply.assert_called_once()
     db=database.open_db(self.file);self.assertEqual(db.execute("SELECT count(*) FROM audit_log WHERE action='camera.control.light'").fetchone()[0],1);db.close()
+ def test_extended_camera_settings_permission_and_whitelist(self):
+    from unittest.mock import patch
+    cookie,csrf=self.login();r,b=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://u:secret@192.168.1.30/main'},cookie,csrf);cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/settings'
+    with patch('sunhill_nvr.camera_control.Reolink') as device,patch('sunhill_nvr.camera_control.capabilities',return_value={'controls':{},'partial':False,'device':{'model':'Lumus'}}),patch('sunhill_nvr.camera_settings.read',return_value=([{'key':'mirror','value':False}],False)),patch('sunhill_nvr.camera_settings.apply') as apply:
+        self.assertEqual(self.call(url,'POST',{'control':'mirror','value':True},cookie)[0]['status'],'403 Forbidden');device.assert_not_called()
+        self.assertEqual(self.call(url,'POST',{'control':'SetNetPort','value':True},cookie,csrf)[0]['status'],'400 Bad Request');device.assert_not_called()
+        r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b)['settings'],[{'key':'mirror','value':False}]);self.assertNotIn(b'secret',b)
+        self.assertEqual(self.call(url,'POST',{'control':'mirror','value':True},cookie,csrf)[0]['status'],'200 OK');apply.assert_called_once()
  def test_camera_identity_when_control_transport_fails(self):
     from unittest.mock import patch
     from sunhill_nvr.camera_control import ControlError
@@ -1306,6 +1314,41 @@ class WebTests(unittest.TestCase):
     _,body=self.call('/api/cameras',cookie=cookie);self.assertFalse(json.loads(body)['cameras'][0]['enabled'])
     r,_=self.call('/internal/live-auth',cookie=cookie,extra={'HTTP_X_ORIGINAL_URI':'/live/api/ws?src=cam'});self.assertEqual(r['status'],'403 Forbidden')
     r,_=self.call(f'/api/cameras/{cid}','PATCH',{'enabled':True},cookie,csrf);self.assertEqual(r['status'],'200 OK')
+ def test_native_events_options_acl_global_list_and_boxes(self):
+    import datetime
+    from urllib.parse import urlencode
+    cookie,csrf=self.login()
+    ids=[]
+    for slug in ('first','second'):
+        _,body=self.call('/api/cameras','POST',{'slug':slug,'name':slug,'main_url':'rtsp://x'},cookie,csrf);ids.append(json.loads(body)['id'])
+    url=f'/api/cameras/{ids[0]}/event-settings';data={'enabled':True,'types':['person'],'retention_days':30}
+    self.assertEqual(self.call(url,'PATCH',data,cookie)[0]['status'],'403 Forbidden')
+    self.assertEqual(self.call(url,'PATCH',{**data,'retention_days':0},cookie,csrf)[0]['status'],'400 Bad Request')
+    self.assertEqual(json.loads(self.call(url,'PATCH',data,cookie,csrf)[1])['types'],['person'])
+    _,body=self.call('/api/integrations/events/token','POST',{},cookie,csrf);token=json.loads(body)['token']
+    now=datetime.datetime.now(datetime.timezone.utc);stamp=int(now.timestamp())
+    payload={'camera':'first','type':'person','time':now.isoformat(),'box':[0.1,0.2,0.3,0.4],'zone':'Brama'}
+    self.assertEqual(self.call('/api/integrations/events','POST',{**payload,'box':[0,0,2,2]},extra={'HTTP_AUTHORIZATION':'Bearer '+token})[0]['status'],'400 Bad Request')
+    self.assertEqual(self.call('/api/integrations/events','POST',payload,extra={'HTTP_AUTHORIZATION':'Bearer '+token})[0]['status'],'202 Accepted')
+    with database.open_db(self.file) as db:
+        db.execute("INSERT INTO event_markers(camera_id,started_at,event_type,source) VALUES(?,?,'animal','reolink')",(ids[1],stamp))
+        uid=security.create_user(db,'eventviewer','password-for-viewer','viewer');db.execute('INSERT INTO camera_permissions VALUES(?,?,0)',(uid,ids[0]))
+    db.close()
+    r,b=self.call('/api/login','POST',{'username':'eventviewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0]
+    from zoneinfo import ZoneInfo
+    query=urlencode({'date':now.astimezone(ZoneInfo('Europe/Warsaw')).date().isoformat()})
+    self.assertEqual(self.call(url,cookie=viewer)[0]['status'],'403 Forbidden')
+    self.assertEqual(self.call('/api/settings/database',cookie=viewer)[0]['status'],'403 Forbidden')
+    self.assertEqual(json.loads(self.call('/api/settings/database',cookie=cookie)[1])['events'],2)
+    maintenance='/api/settings/database/maintenance'
+    self.assertEqual(self.call(maintenance,'POST',{'operation':'vacuum'},cookie,csrf)[0]['status'],'400 Bad Request')
+    self.assertEqual(self.call(maintenance,'POST',{'operation':'quick_check'},cookie)[0]['status'],'403 Forbidden')
+    self.assertTrue(json.loads(self.call(maintenance,'POST',{'operation':'quick_check'},cookie,csrf)[1])['ok'])
+    self.assertTrue(json.loads(self.call(maintenance,'POST',{'operation':'optimize'},cookie,csrf)[1])['ok'])
+    events=json.loads(self.call('/api/events',cookie=viewer,extra={'QUERY_STRING':query})[1])['events']
+    self.assertEqual(len(events),1);self.assertEqual(events[0]['box'],payload['box']);self.assertEqual(events[0]['zone'],'Brama')
+    self.assertEqual(len(json.loads(self.call('/api/events',cookie=cookie,extra={'QUERY_STRING':query})[1])['events']),2)
+    self.assertEqual(self.call('/api/events',cookie=viewer,extra={'QUERY_STRING':query+'&camera='+str(ids[1])})[0]['status'],'403 Forbidden')
  def test_event_token_has_narrow_scope_and_can_be_revoked(self):
     import datetime
     cookie,csrf=self.login();_,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x'},cookie,csrf);cid=json.loads(body)['id']

@@ -135,3 +135,11 @@ body{background:#101318}main{max-width:1800px}.app-header{background:#171b22;bor
 #cameras>.camera>video-stream{cursor:zoom-in}
 #cameras>.camera.expanded>video-stream{cursor:zoom-out}
 #cameras.live-custom-grid>.camera.expanded>video-stream{height:auto;max-height:75vh}
+/* Device settings live only in the camera administration details. */
+#manage-cameras .device-controls{margin:12px 0;padding:12px;border:1px solid var(--border,#3a4553);border-radius:8px}
+#manage-cameras .device-control-fields{display:grid;gap:12px}
+#manage-cameras .device-settings-group{min-width:0;display:grid;gap:10px;padding:12px;border:1px solid var(--border,#3a4553);border-radius:6px}
+#manage-cameras .device-control-range{display:grid;gap:5px}
+#manage-cameras .device-control-range input{width:100%}
+#cameras .live-light:not([hidden]){display:grid;gap:5px}
+.event-history-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.6rem 0;border-bottom:1px solid var(--border,#343b44)}.event-history-row button{flex-shrink:0}.timeline-event[data-kind="person"]{background:#ef6464}.timeline-event[data-kind="vehicle"]{background:#e9a23b}.timeline-event[data-kind="animal"]{background:#52bd83}#archive-detection-overlay{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}.detection-box{position:absolute;border:2px solid #63df92;box-sizing:border-box;color:white;font-size:12px;text-shadow:1px 1px 2px black;overflow:hidden}.detection-box[data-kind="person"]{border-color:#ef6464}.detection-box[data-kind="vehicle"]{border-color:#e9a23b}

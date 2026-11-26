@@ -30,3 +30,5 @@ Decyzja administratora 0.3.12 (poz. 70): magazyn niezależny od fizycznego dysku
 Decyzja użytkownika 0.3.13 (poz. 35–36): przyrostowy import istniejących plików, ręczny zakres kamery i dat, wstrzymanie oraz postęp bez kasowania indeksu.
 
 Decyzja użytkownika 0.3.17 (poz. 19, 22, 35, 63, 67, 68): dwuklik wideo Live powiększa i przywraca kafelek; automatyczne usuwanie potwierdzonych pustych nagrań podczas indeksowania po dodatkowej weryfikacji, natychmiastowa informacja o przyjęciu zlecenia.
+
+Decyzja użytkownika 1.0.2 (poz. 1, 5, 39–40, 50): jedna dotychczasowa baza SQLite, natywne zdarzenia AI kamer Reolink zgodne z ich ustawieniami, historia i przejście do nagrania, prostokąty tylko z rzeczywistymi metadanymi, bez miniatur i dodatkowych plików zdarzeń; zachowana instalacja od zera.

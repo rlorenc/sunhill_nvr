@@ -17,7 +17,8 @@ import os,sys
 args=sys.argv[1:]
 with open(os.environ['CALLS'],'a') as f:f.write(' '.join(args)+'\\n')
 if args[0]=='cat':sys.exit(0 if args[1] in os.environ['PRESENT'].split(',') else 1)
-if args[0]=='disable':sys.exit(1 if args[-1]==os.environ.get('FAIL') else 0)
+if args[0] in ('disable','start'):sys.exit(1 if args[-1]==os.environ.get('FAIL') else 0)
+if args[0] in ('--failed','status'):sys.exit(0)
 sys.exit(2)
 ''')
             executable.chmod(0o755)
@@ -27,6 +28,14 @@ sys.exit(2)
             script = '. "$1"; '+function
             result = subprocess.run(['bash','-e','-c',script,'bash',str(ROOT/'scripts/install_helpers.sh')],env=env,capture_output=True,text=True)
             return result.returncode,calls.read_text().splitlines() if calls.exists() else []
+
+    def test_initial_services_start_recovery_first_and_fail_closed(self):
+        expected=['start sunhill-upgrade-recover.service','start sunhill-activity.service','start sunhill-controller.service']
+        code,calls=self.run_helper([],function='start_initial_services')
+        self.assertEqual(code,0);self.assertEqual(calls,expected)
+        code,calls=self.run_helper([],fail='sunhill-upgrade-recover.service',function='start_initial_services')
+        self.assertNotEqual(code,0);self.assertEqual([x for x in calls if x.startswith('start ')],expected[:1])
+        self.assertTrue(any(x.startswith('status sunhill-upgrade-recover.service') for x in calls))
 
     def test_existing_or_dangling_install_path_is_rejected(self):
         with tempfile.TemporaryDirectory() as name:
@@ -164,6 +173,18 @@ sys.exit(1 if os.environ.get('DENY') in args else 0)
             dependency.unlink()
             result=check();self.assertNotEqual(result.returncode,0);self.assertIn(str(dependency),result.stderr)
 
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root and real unprivileged account')
+    def test_actual_group_access_to_existing_archive(self):
+        import grp
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);root.chmod(0o755)
+            archive=root/'kamery';archive.mkdir();os.chown(archive,0,grp.getgrnam('nogroup').gr_gid)
+            archive.chmod(0o770)
+            command=['bash','-e','-c','. "$1"; validate_storage_access "$2" nobody','bash',str(ROOT/'scripts/install_helpers.sh'),str(root)]
+            self.assertEqual(subprocess.run(command,capture_output=True).returncode,0)
+            archive.chmod(0o700)
+            self.assertNotEqual(subprocess.run(command,capture_output=True).returncode,0)
 
     @unittest.skipUnless(os.geteuid() == 0, 'requires root and real unprivileged account')
     def test_directory_layout_under_restrictive_umask(self):

@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Verify actual default installation or interrupted 0.2.8 recovery
+      - name: Verify default installation or controlled interrupted 0.2.8 recovery
         run: |
           git checkout -B main "$GITHUB_SHA"
           version=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')

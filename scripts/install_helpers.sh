@@ -100,9 +100,15 @@ validate_storage_group() {
     fi
 }
 
+# Check access under the actual service credentials, including supplementary
+# groups. Do not depend on the platform's implementation of external test(1).
+account_can_access() {
+    runuser -u "$1" -- /usr/bin/python3 -c 'import os,sys; modes={"-r":os.R_OK,"-w":os.W_OK,"-x":os.X_OK}; sys.exit(0 if os.access(sys.argv[2],modes[sys.argv[1]],effective_ids=True) else 1)' "$2" "$3"
+}
+
 validate_storage_access() {
     local root=$1 account=$2 leaf target flag
-    if ! runuser -u "$account" -- test -x "$root"; then
+    if ! account_can_access "$account" -x "$root"; then
         printf 'Application account cannot traverse storage: %s\n' "$root" >&2
         return 1
     fi
@@ -114,7 +120,7 @@ validate_storage_access() {
         fi
         if [[ -d "$target" ]]; then
             for flag in -r -w -x; do
-                if ! runuser -u "$account" -- test "$flag" "$target"; then
+                if ! account_can_access "$account" "$flag" "$target"; then
                     printf 'Application account lacks %s access to existing directory: %s\n' "$flag" "$target" >&2
                     return 1
                 fi
@@ -162,10 +168,10 @@ prepare_application_directories() {
         install -d -o "$account" -g "$group" -m 0750 "$root/media" || return 1
     fi
     for dir in "$root" "$root/releases/$version/app" "$root/recovery/app" "$root/config" "$root/control/upgrade"; do
-        runuser -u "$account" -- test -x "$dir" || { printf 'Application cannot traverse: %s\n' "$dir" >&2; return 1; }
+        account_can_access "$account" -x "$dir" || { printf 'Application cannot traverse: %s\n' "$dir" >&2; return 1; }
     done
     for dir in "$root/data" "$root/data/upgrade-inbox"; do
-        runuser -u "$account" -- test -w "$dir" || { printf 'Application cannot write: %s\n' "$dir" >&2; return 1; }
+        account_can_access "$account" -w "$dir" || { printf 'Application cannot write: %s\n' "$dir" >&2; return 1; }
     done
 }
 
@@ -242,5 +248,20 @@ reset_resume_failed_units() {
             return 1
         fi
         printf 'Unit already inactive: %s; continuing startup.\n' "$unit" >&2
+    done
+}
+
+# Recovery must finish before the controller, and activity RPC must be ready
+# before services that use it. Keep the original fail-closed dependency.
+start_initial_services() {
+    local unit
+    for unit in sunhill-upgrade-recover.service sunhill-activity.service sunhill-controller.service; do
+        if ! systemctl start "$unit"; then
+            printf 'Initial service failed: %s\n' "$unit" >&2
+            systemctl --failed --no-pager >&2 || true
+            systemctl status sunhill-upgrade-recover.service sunhill-upgrade-ready.service sunhill-activity.service sunhill-controller.service sunhill-ftp-policy.service sunhill-ftp.service sunhill-go2rtc.service --no-pager -l >&2 || true
+            journalctl -b -u sunhill-upgrade-recover.service -u sunhill-upgrade-ready.service -u sunhill-activity.service -u sunhill-controller.service -u sunhill-ftp-policy.service -u sunhill-ftp.service -u sunhill-go2rtc.service -n 150 --no-pager -l >&2 || true
+            return 1
+        fi
     done
 }

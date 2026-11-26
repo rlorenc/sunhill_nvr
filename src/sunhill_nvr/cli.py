@@ -253,7 +253,14 @@ def main(argv=None) -> int:
                     if result is not None and not result.interrupted and full and not any(index_control.read(db).get(k) for k in ('camera','start','end')):next_full[0]=time.monotonic()+6*3600
                 else:workers.index_once(cfg,db,full=False,should_stop=should_stop)
         periodic(config,index_action,60,once=args.once,cancellable=True);return 0
-    if args.command=='health-worker':periodic(config,workers.health_once,60,once=args.once);return 0
+    if args.command=='health-worker':
+        if args.once:periodic(config,workers.health_once,60,once=True);return 0
+        import threading
+        from . import camera_events
+        stop=threading.Event();thread=threading.Thread(target=camera_events.supervise,args=(config,stop),daemon=True);thread.start()
+        try:periodic(config,workers.health_once,60)
+        finally:stop.set();thread.join(timeout=6)
+        return 0
     if args.command=='clock-worker':periodic(config,workers.clocks_once,900,once=args.once,cancellable=True);return 0
     if args.command=='stream-health-worker':periodic(config,workers.streams_once,300,once=args.once,cancellable=True);return 0
     if args.command=='recorder-worker':recorder_loop(config,once=args.once);return 0

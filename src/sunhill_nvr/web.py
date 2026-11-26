@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import security,database,workers
 from .media_layout import validate_media_layout,nested_auxiliary
 from .cameras import Camera, validate, with_credentials
-from . import camera_discovery,player_assets,camera_statistics,camera_control
+from . import camera_discovery,player_assets,camera_statistics,camera_control,camera_settings,camera_events
 from .nginx_config import HOST
 from .fd_mount import MountBoundary,MountUnavailable
 from .files import FileBody, InvalidRange, acquire_shared, open_confined, open_export, delete_export, parse_range, recorded_identity
@@ -180,6 +180,8 @@ class Application:
             db.execute('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').fetchone()
             db.execute('SELECT id FROM recordings LIMIT 1').fetchone()
             db.execute('SELECT id FROM export_jobs LIMIT 1').fetchone()
+            db.execute('SELECT last_seen,zone,box_json FROM event_markers LIMIT 1').fetchone()
+            db.execute('SELECT camera_id FROM camera_event_options LIMIT 1').fetchone()
             return '200 OK',{'status':'ok'},[]
         static={'/':'index.html','/assets/app.css':'app.css','/assets/app.js':'app.js'}
         if method in ('GET','HEAD') and url in static:
@@ -203,8 +205,11 @@ class Application:
                 raise APIError('401 Unauthorized','Nieprawidłowy token integracji')
             data=self.json_body(environ)
             try:
-                if set(data)!={'camera','type','time'} or not isinstance(data['camera'],str) or data['type'] not in ('motion','person','vehicle','animal'):
+                if not {'camera','type','time'}<=set(data) or set(data)-{'camera','type','time','box','zone'} or not isinstance(data['camera'],str) or data['type'] not in camera_events.TYPES:
                     raise ValueError()
+                box=camera_events.normalize_box(data['box']) if 'box' in data else None
+                zone=data.get('zone')
+                if zone is not None and (not isinstance(zone,str) or not 1<=len(zone)<=120 or any(ord(c)<32 for c in zone)):raise ValueError()
                 instant=export_service.parse_instant(data['time']);timestamp=int(instant.timestamp());now=int(time.time())
                 if timestamp>now+300 or timestamp<now-7*86400:raise ValueError()
                 with db:
@@ -216,7 +221,7 @@ class Application:
                         raise APIError('401 Unauthorized','Nieprawidłowy token integracji')
                     camera=db.execute('SELECT id FROM cameras WHERE slug=? AND enabled=1',(data['camera'],)).fetchone()
                     if not camera:raise ValueError()
-                    db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,event_type,source) VALUES (?,?,?,?)',(camera[0],timestamp,data['type'],'home_assistant'))
+                    db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,event_type,source,zone,box_json) VALUES (?,?,?,?,?,?)',(camera[0],timestamp,data['type'],'home_assistant',zone,json.dumps(box) if box else None))
                 return '202 Accepted',{'ok':True},[]
             except (ValueError,TypeError,OverflowError):raise APIError('400 Bad Request','Nieprawidłowe zdarzenie')
         origin=self.request_origin(environ)
@@ -885,25 +890,33 @@ class Application:
             headers=[('Content-Type','video/mp4'),('Content-Length',str(part.length)),('Accept-Ranges','bytes'),('Content-Disposition',f'attachment; filename="sunhill-{jid}.mp4"')]
             if status.startswith('206'):headers.append(('Content-Range',f'bytes {part.start}-{part.end}/{part.total}'))
             return status,FileBody(fd,part,authorize=self.stream_authorizer(token,row[1],download=True,owner_id=row[0]),head=method=='HEAD'),headers
-        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/controls',url)
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/(controls|settings)',url)
         if match and method in ('GET','POST'):
             self.admin(user)
             cid=int(match.group(1))
+            extended=match.group(2)=='settings'
             if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
             row=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
             if not row:raise APIError('404 Not Found','Kamera niedostępna')
             if method=='POST':
-                try:control,value=camera_control.validate_command(self.json_body(environ))
+                try:
+                    body=self.json_body(environ)
+                    if extended and isinstance(body,dict) and set(body)=={'control','value'} and isinstance(body['control'],str) and camera_settings.valid(body['control'],body['value']):control,value=body['control'],body['value']
+                    else:control,value=camera_control.validate_command(body)
                 except camera_control.ControlError as exc:raise APIError('400 Bad Request',str(exc)) from None
             try:
                 with camera_control.Reolink(row[0]) as client:
-                    if method=='GET':result=camera_control.capabilities(client)
+                    if method=='GET':
+                        result=camera_control.capabilities(client)
+                        if extended:
+                            settings,partial=camera_settings.read(client);result['settings']=settings;result['partial']=result.get('partial',False) or partial
                     else:
                         # Recheck authority after remote authentication; no DB write lock during network I/O.
                         self.current_admin(db,token)
                         latest=db.execute('SELECT main_url FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
                         if not latest or latest[0]!=row[0] or not security.may_access(db,user,cid,live=True):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
-                        camera_control.apply(client,control,value)
+                        if extended and (control in camera_settings.FIELDS or control in ('ir_mode','floodlight_brightness')):camera_settings.apply(client,control,value)
+                        else:camera_control.apply(client,control,value)
                 if method=='POST':
                     with db:self.audit(db,user[0],'camera.control.'+control,'camera',cid)
                     return '200 OK',{'ok':True},[]
@@ -1111,6 +1124,72 @@ class Application:
                   AND CAST(strftime('%s',COALESCE(utc_second,utc_first)) AS INTEGER)+duration>?
                 ORDER BY utc_first,id LIMIT 1""",(slug,int(exclude_text),lower,after+0.05)).fetchone()
             return '200 OK',{'recording':{'id':row[0],'utc_first':row[1],'utc_second':row[2]} if row else None},[]
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/event-settings',url)
+        if match and method in ('GET','PATCH'):
+            self.admin(user);cid=int(match.group(1))
+            if not security.may_access(db,user,cid):raise APIError('404 Not Found','Nieznana kamera')
+            if method=='PATCH':
+                data=self.json_body(environ)
+                try:
+                    with db:
+                        db.execute('BEGIN IMMEDIATE')
+                        camera_events.save_options(db,cid,data)
+                        self.audit(db,user[0],'camera.events.configure','camera',cid)
+                except (ValueError,TypeError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowe ustawienia zdarzeń')
+            return '200 OK',camera_events.options(db,cid),[]
+        if url=='/api/settings/database' and method=='GET':
+            self.admin(user)
+            def size(path):
+                try:return path.stat().st_size
+                except FileNotFoundError:return 0
+            return '200 OK',{'bytes':size(self.db_path),'wal_bytes':size(Path(str(self.db_path)+'-wal')),
+                'page_count':db.execute('PRAGMA page_count').fetchone()[0], 'free_pages':db.execute('PRAGMA freelist_count').fetchone()[0],
+                'recordings':db.execute('SELECT COUNT(*) FROM recordings').fetchone()[0], 'events':db.execute('SELECT COUNT(*) FROM event_markers').fetchone()[0],
+                'journal':db.execute('PRAGMA journal_mode').fetchone()[0]},[]
+        if url=='/api/settings/database/maintenance' and method=='POST':
+            self.admin(user)
+            data=self.json_body(environ)
+            if set(data)!={'operation'} or data['operation'] not in ('quick_check','optimize'):
+                raise APIError('400 Bad Request','Nieprawidłowa operacja bazy')
+            operation=data['operation'];deadline=time.monotonic()+5
+            db.set_progress_handler(lambda:int(time.monotonic()>deadline or not workers.writes_permitted()),10000)
+            try:
+                if operation=='quick_check':
+                    result=db.execute('PRAGMA quick_check(10)').fetchall();ok=result==[('ok',)]
+                else:
+                    db.execute('PRAGMA analysis_limit=1000');db.execute('PRAGMA optimize').fetchall();ok=True
+            except sqlite3.OperationalError:
+                raise APIError('503 Service Unavailable','Operacja bazy nie została ukończona. Ponów poza intensywnym indeksowaniem.') from None
+            finally:db.set_progress_handler(None,0)
+            with db:self.audit(db,user[0],'database.'+operation,'database','main')
+            return '200 OK',{'ok':ok,'operation':operation},[]
+        if url=='/api/events' and method=='GET':
+            from datetime import date,datetime,timedelta,timezone
+            from zoneinfo import ZoneInfo
+            params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
+            try:
+                if set(params)-{'date','camera','type','cursor'} or len(params.get('date',[]))!=1 or any(len(v)!=1 for v in params.values()):raise ValueError()
+                day=date.fromisoformat(params['date'][0]);zone=ZoneInfo(self.timezone)
+                if day.isoformat()!=params['date'][0] or not 1970<=day.year<=2099:raise ValueError()
+                first=int(datetime.combine(day,datetime.min.time(),tzinfo=zone).timestamp());last=int(datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=zone).timestamp())
+                raw=params.get('camera',[''])[0];cid=int(raw) if raw else None
+                if cid is not None and not 1<=cid<=9999999999:raise ValueError()
+                kind=params.get('type',[''])[0]
+                if kind and kind not in camera_events.TYPES:raise ValueError()
+                cursor=archive_cursor(params.get('cursor',[None])[0],event=True)
+            except (ValueError,OverflowError):raise APIError('400 Bad Request','Nieprawidłowy filtr zdarzeń')
+            if cid is not None and not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
+            rows=db.execute('''SELECT e.id,e.started_at,e.event_type,e.ended_at,e.source,e.zone,e.box_json,c.id,c.name
+                FROM event_markers e JOIN cameras c ON c.id=e.camera_id WHERE e.started_at>=? AND e.started_at<?
+                AND (? IS NULL OR c.id=?) AND (?='' OR e.event_type=?) AND (?='admin' OR EXISTS(SELECT 1 FROM camera_permissions p WHERE p.user_id=? AND p.camera_id=c.id))
+                AND (? IS NULL OR e.started_at<? OR (e.started_at=? AND e.id<?)) ORDER BY e.started_at DESC,e.id DESC LIMIT 201''',
+                (first,last,cid,cid,kind,kind,user[2],user[0],cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0)).fetchall()
+            more=len(rows)>200;rows=rows[:200]
+            from .timeline import utc_candidates
+            def fold_for(timestamp):
+                local=datetime.fromtimestamp(timestamp,timezone.utc).astimezone(zone)
+                return local.fold if len(utc_candidates(local.replace(tzinfo=None),zone))==2 else None
+            return '200 OK',{'events':[{'id':r[0],'timestamp':r[1],'type':r[2],'ended_at':r[3],'source':r[4],'zone':r[5],'box':json.loads(r[6]) if r[6] else None,'camera_id':r[7],'camera_name':r[8],'fold':fold_for(r[1])} for r in rows], 'next_cursor':f'{rows[-1][1]}|{rows[-1][0]}' if more else None},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/events',url)
         if match and method=='GET':
             from datetime import date,datetime,timedelta,timezone
@@ -1126,16 +1205,16 @@ class Application:
                 first=int(datetime.combine(day,datetime.min.time(),tzinfo=zone).timestamp())
                 last=int(datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=zone).timestamp())
             except ValueError:raise APIError('400 Bad Request','Nieprawidłowa data')
-            rows=db.execute('SELECT id,started_at,event_type FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?',
+            rows=db.execute('SELECT id,started_at,event_type,ended_at,source,zone,box_json FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?',
                             (cid,first,last,cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0,ARCHIVE_PAGE_SIZE+1)).fetchall()
             more=len(rows)>ARCHIVE_PAGE_SIZE;rows=rows[:ARCHIVE_PAGE_SIZE]
             next_cursor=f'{rows[-1][1]}|{rows[-1][0]}' if more else None
             from .timeline import utc_candidates
             events=[]
-            for identifier,timestamp,kind in rows:
+            for identifier,timestamp,kind,ended,source,zone_name,box in rows:
                 local=datetime.fromtimestamp(timestamp,timezone.utc).astimezone(zone)
                 fold=local.fold if len(utc_candidates(local.replace(tzinfo=None),zone))==2 else None
-                events.append({'id':identifier,'timestamp':timestamp,'type':kind,'fold':fold})
+                events.append({'id':identifier,'timestamp':timestamp,'type':kind,'fold':fold,'ended_at':ended,'source':source,'zone':zone_name,'box':json.loads(box) if box else None})
             return '200 OK',{'events':events,'next_cursor':next_cursor},[]
         match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/frame',url)
         if match and method=='GET':

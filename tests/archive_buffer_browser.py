@@ -38,6 +38,15 @@ with tempfile.TemporaryDirectory() as directory:
         assert page.evaluate('document.fullscreenElement?.id==="archive-stage"')
         page.locator('#archive-exit-fullscreen').click();page.wait_for_function('!document.fullscreenElement')
         page.evaluate('archiveTest.clear()');assert page.evaluate('archiveTest.count()===0 && document.querySelectorAll("#archive-stage video").length===1')
+        # Only supplied coordinates at the observation time are drawn, never a fabricated box.
+        page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:99,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}];drawDetectionOverlay($('archive-player'),1795608002)")
+        assert page.locator('#archive-detection-overlay .detection-box').count()==1
+        assert page.locator('#archive-detection-overlay .detection-box').inner_text()=='Człowiek'
+        assert page.locator('#archive-detection-overlay .detection-box').bounding_box()['width']>0
+        page.evaluate("code=>runArchiveTest(code)","drawDetectionOverlay($('archive-player'),1795608004)")
+        assert page.locator('#archive-detection-overlay').is_hidden()
+        page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:100,timestamp:1795608002,type:'animal'}];drawDetectionOverlay($('archive-player'),1795608002)")
+        assert page.locator('#archive-detection-overlay').is_hidden()
         # Calendar renders a real month grid, disables empty days, and highlights indexed days.
         page.evaluate("code=>runArchiveTest(code)","$('archive-date').value='2026-10-23';syncArchiveDateLabel();renderCalendar('2026-10',['2026-10-02','2026-10-23']);$('archive-calendar-panel').open=true;api=async()=>({days:['2026-10-02','2026-10-23']});$('archive-month').value='2026-10'")
         page.wait_for_function("document.querySelectorAll('#calendar-days button.available').length===2")

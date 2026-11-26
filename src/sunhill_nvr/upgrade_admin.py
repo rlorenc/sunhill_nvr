@@ -66,13 +66,13 @@ def trusted_directory(directory: Path) -> None:
         current=current/component
         info=current.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:
-            raise ReleaseError('upgrade directory is not trusted')
+            raise ReleaseError('upgrade directory is not trusted: '+str(current))
 
 
 def trusted_file(file: Path) -> None:
     info=file.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or info.st_mode&0o022:
-        raise ReleaseError('upgrade file is not trusted')
+        raise ReleaseError('upgrade file is not trusted: '+str(file))
 
 
 def context() -> SystemAdapter:

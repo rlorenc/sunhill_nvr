@@ -44,6 +44,8 @@ truncate -s 24G "$test_dir/disk.img"
 mkfs.ext4 -F -q "$test_dir/disk.img"
 sudo mkdir /mnt/sunhill-ci
 sudo mount -o loop "$test_dir/disk.img" /mnt/sunhill-ci
+# The synthetic disk root must be traversable by the later service account.
+sudo chmod 0755 /mnt/sunhill-ci
 sudo env PYTHONPATH="$PWD/src" python3 -c 'from sunhill_nvr.proc_scan import require_proc_visibility; require_proc_visibility()'
 # Exercise the refusal path before apt or application files are touched. The
 # fixture belongs to this disposable filesystem, never to a real installation.
@@ -71,6 +73,7 @@ if id sunhill >/dev/null 2>&1 || getent group sunhill >/dev/null 2>&1; then
 fi
 [[ "$(sudo cat /mnt/sunhill-ci/kamery/keep.txt)" == 'existing archive fixture' ]]
 sudo groupadd sunhill-ci-archive
+getent group sunhill-ci-archive
 sudo chgrp sunhill-ci-archive /mnt/sunhill-ci/kamery
 sudo chmod 0770 /mnt/sunhill-ci/kamery
 sudo mkdir -p /mnt/sunhill-ci/kamery/brama/2020/01/01
@@ -80,6 +83,8 @@ printf 'existing recording fixture\n' | sudo tee /mnt/sunhill-ci/kamery/brama/20
 sudo chgrp sunhill-ci-archive /mnt/sunhill-ci/kamery/brama/2020/01/01/190900.mp4
 sudo chmod 0640 /mnt/sunhill-ci/kamery/brama/2020/01/01/190900.mp4
 if ! sudo env SUNHILL_STORAGE_GROUP=sunhill-ci-archive bash ./install.sh nvr.example.com /mnt/sunhill-ci >"$test_dir/install.log" 2>&1; then
+    sudo namei -l /mnt/sunhill-ci/kamery >&2
+    getent group sunhill-ci-archive >&2
     sed '/One-time setup code/c\One-time setup code: [redacted]' "$test_dir/install.log" >&2
     exit 1
 fi

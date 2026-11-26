@@ -82,9 +82,23 @@ class Baichuan:
             result.extend(part)
         return bytes(result)
 
-    def request(self,cmd,body=b'',*,channel=None,nonce=False,login=False):
+    def read_frame(self):
+        h=self.receive(20);magic,returned,length,returned_id,status,kind=struct.unpack('<IIIIHH',h)
+        if magic!=_MAGIC or length>_MAX or kind not in (0x6414,0x6514,0x6614,0x0000):raise ProtocolError('Baichuan: nieprawidłowa ramka.')
+        offset=struct.unpack('<I',self.receive(4))[0] if kind in (0x6414,0x0000) else 0
+        if offset>length:raise ProtocolError('Baichuan: nieprawidłowy offset.')
+        return returned,returned_id,status,kind,self.receive(length)[offset:]
+
+    def decode_body(self,raw,mid):
+        if not raw:return None
+        for decode in (lambda b:aes(b,self.key,True),lambda b:xor(b,mid&255)):
+            try:return parse_xml(decode(raw))
+            except (ValueError,ET.ParseError,UnicodeError):continue
+        raise ProtocolError('Baichuan: nieprawidłowe XML zdarzenia.')
+
+    def request(self,cmd,body=b'',*,channel=None,nonce=False,login=False,push_channel=False,on_push=None):
         # A new sequence per request, low byte encodes host/channel.
-        self.seq=(self.seq+1)%0x1000000;ch=250 if channel is None else channel+1
+        self.seq=(self.seq+1)%0x1000000;ch=251 if push_channel else (250 if channel is None else channel+1)
         mid=(self.seq<<8)|ch
         extension=xml('Extension',{'channelId':channel},wrap=False) if channel is not None else b''
         encode=(lambda b:xor(b,ch)) if nonce or login else (lambda b:aes(b,self.key))
@@ -100,7 +114,9 @@ class Baichuan:
             offset=struct.unpack('<I',self.receive(4))[0] if kind in (0x6414,0x0000) else 0
             if offset>length:raise ProtocolError('Baichuan: nieprawidłowy offset.')
             raw=self.receive(length)
-            if returned!=cmd or returned_id!=mid:continue
+            if returned!=cmd or returned_id!=mid:
+                if on_push is not None and returned==33 and status in (0,200):on_push(self.decode_body(raw[offset:],returned_id))
+                continue
             if not (status==200 or (nonce and kind in (0x6514,0x6614) and status in (0xdd00,0xdd01,0xdd02,0xdd03,0xdd12))):
                 raise Rejected(f'Baichuan: kamera odrzuciła polecenie (cmd={cmd}, kod={status}, klasa={h[18:20].hex()}).')
             raw=raw[offset:]

@@ -16,8 +16,8 @@ report_failure() {
     trap - ERR
     printf 'Resume failed (exit %s). Data and prior release preserved; inspect logs before retrying.\n' "$status" >&2
     systemctl --failed --no-pager >&2 || true
-    systemctl status sunhill-controller.service sunhill-ftp-policy.service sunhill-ftp.service sunhill-go2rtc.service --no-pager -l >&2 || true
-    journalctl -b --since "@$started" -u sunhill-controller.service -u sunhill-ftp-policy.service -u sunhill-ftp.service -u sunhill-go2rtc.service -n 100 --no-pager >&2 || true
+    systemctl status sunhill-upgrade-recover.service sunhill-activity.service sunhill-controller.service sunhill-ftp-policy.service sunhill-ftp.service sunhill-go2rtc.service --no-pager -l >&2 || true
+    journalctl -b --since "@$started" -u sunhill-upgrade-recover.service -u sunhill-activity.service -u sunhill-controller.service -u sunhill-ftp-policy.service -u sunhill-ftp.service -u sunhill-go2rtc.service -n 100 --no-pager >&2 || true
     for unit in sunhill-controller.timer sunhill-upgrade-apply.timer sunhill-upgrade-apply.service sunhill-upgrade-ready.service sunhill-controller.service sunhill-ftp-policy.service sunhill-go2rtc.service sunhill-ftp.service sunhill-web.service sunhill-live-proxy.service sunhill-activity.service sunhill-export.service sunhill-index.service sunhill-recorder.service sunhill-health.service sunhill-stream-health.service sunhill-clock.service sunhill-retention.service sunhill-retention-preview.service; do
         systemctl stop "$unit" >/dev/null 2>&1 || true
         systemctl disable "$unit" >/dev/null 2>&1 || true
@@ -29,7 +29,7 @@ trap report_failure ERR
 PYTHONPATH="$source_dir/src" /usr/bin/python3 -m sunhill_nvr.apparmor_ftp "$root/config/config.json"
 systemctl daemon-reload
 reset_resume_failed_units sunhill-controller.service sunhill-go2rtc.service sunhill-ftp.service sunhill-ftp-policy.service
-systemctl start sunhill-controller.service
+start_initial_services
 systemctl enable --now sunhill-activity.service sunhill-web.service sunhill-live-proxy.service sunhill-export.service \
     sunhill-index.service sunhill-recorder.service sunhill-health.service sunhill-stream-health.service sunhill-clock.service sunhill-retention.service sunhill-retention-preview.service \
     sunhill-controller.timer sunhill-upgrade-ready.service sunhill-upgrade-apply.timer

@@ -96,6 +96,24 @@ CREATE TABLE IF NOT EXISTS export_cancel_requests (
 ''',
 8: '''
 ALTER TABLE pending_notifications ADD COLUMN origin TEXT NOT NULL DEFAULT '' CHECK(origin IN ('','onvif'));
+''',
+9: '''
+ALTER TABLE event_markers ADD COLUMN last_seen INTEGER;
+ALTER TABLE event_markers ADD COLUMN zone TEXT;
+ALTER TABLE event_markers ADD COLUMN box_json TEXT;
+CREATE INDEX idx_event_camera_time ON event_markers(camera_id,started_at,id);
+CREATE INDEX idx_event_time ON event_markers(started_at,id);
+CREATE INDEX idx_event_open ON event_markers(camera_id,source,event_type) WHERE ended_at IS NULL;
+CREATE INDEX idx_event_retention ON event_markers(camera_id,source,ended_at) WHERE ended_at IS NOT NULL;
+CREATE TABLE camera_event_options (
+ camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE,
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), mask INTEGER NOT NULL CHECK(mask BETWEEN 0 AND 255),
+ retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650)
+);
+CREATE TABLE camera_event_status (
+ camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE,
+ transport TEXT NOT NULL, state TEXT NOT NULL, checked_at INTEGER NOT NULL, supported TEXT NOT NULL
+);
 '''
 }
 

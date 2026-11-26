@@ -314,7 +314,7 @@ for leaf in kamery .sunhill-staging .sunhill-exports; do
     dest="$storage/$leaf"
     if [[ -L "$dest" ]]; then printf 'Refusing symlink: %s\n' "$dest" >&2; exit 1; fi
     if [[ ! -e "$dest" ]]; then install -d -o sunhill -g sunhill -m 0750 "$dest"; fi
-    if [[ ! -d "$dest" ]] || ! runuser -u sunhill -- test -w "$dest" || ! runuser -u sunhill -- test -x "$dest" || ! runuser -u sunhill -- test -r "$dest"; then printf 'Directory not accessible by application: %s\n' "$dest" >&2; exit 1; fi
+    if [[ ! -d "$dest" ]] || ! account_can_access sunhill -w "$dest" || ! account_can_access sunhill -x "$dest" || ! account_can_access sunhill -r "$dest"; then printf 'Directory not accessible by application: %s\n' "$dest" >&2; exit 1; fi
 done
 
 install -o root -g root -m 0755 "$tmp/go2rtc" /opt/sunhill-nvr/bin/go2rtc
@@ -347,12 +347,11 @@ printf '%s\n' '[Unit]' 'Requires=sunhill-upgrade-recover.service' 'After=sunhill
 install -o root -g root -m 0644 "$tmp/sunhill-recovery.conf" /etc/systemd/system/nginx.service.d/sunhill-recovery.conf
 nginx -t
 PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.apparmor_ftp /opt/sunhill-nvr/config/config.json
+# Validate exactly the paths and account used by the boot recovery manager
+# before queuing systemd jobs. On a clean install no recovery journal exists.
+PYTHONPATH=/opt/sunhill-nvr/recovery/app /usr/bin/python3 -c 'from sunhill_nvr.upgrade_admin import context; context()'
 systemctl daemon-reload
-if ! systemctl start sunhill-controller.service; then
-    systemctl status sunhill-controller.service sunhill-ftp-policy.service sunhill-ftp.service sunhill-go2rtc.service --no-pager -l >&2 || true
-    journalctl -b -u sunhill-controller.service -u sunhill-ftp-policy.service -u sunhill-ftp.service -u sunhill-go2rtc.service -n 100 --no-pager >&2 || true
-    exit 1
-fi
+start_initial_services
 systemctl enable --now sunhill-activity.service sunhill-web.service sunhill-live-proxy.service sunhill-export.service \
     sunhill-index.service sunhill-recorder.service sunhill-health.service sunhill-stream-health.service sunhill-clock.service sunhill-retention.service sunhill-retention-preview.service \
     sunhill-controller.timer sunhill-upgrade-ready.service sunhill-upgrade-apply.timer
