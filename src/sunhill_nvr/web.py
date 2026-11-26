@@ -1181,6 +1181,30 @@ class Application:
                         self.audit(db,user[0],'recording.protect' if method=='POST' else 'recording.unprotect','recording',rid)
                 except (OSError,ValueError,MountBoundary,MountUnavailable):raise APIError('409 Conflict','Nagranie jest niedostępne lub zostało zmienione')
             return '200 OK',{'protected':method=='POST'},[]
+        match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/media-info',url)
+        if match and method=='GET':
+            rid=int(match.group(1))
+            if environ.get('QUERY_STRING'):raise APIError('400 Bad Request','Nieprawidłowe parametry nagrania')
+            row=db.execute('SELECT recordings.relative_path,recordings.file_size,recordings.mtime_ns,cameras.id,cameras.slug,i.device,i.inode,i.ctime_ns FROM recordings JOIN cameras ON cameras.slug=recordings.camera LEFT JOIN recording_identity i ON i.relative_path=recordings.relative_path WHERE recordings.id=?',(rid,)).fetchone()
+            if not row:raise APIError('404 Not Found','Nie znaleziono nagrania')
+            if not security.may_access(db,user,row[3]):raise APIError('403 Forbidden','Odmowa dostępu')
+            if row[0].split('/',1)[0]!=row[4]:raise APIError('404 Not Found','Nie znaleziono nagrania')
+            try:
+                fd,_=open_confined(self.archive_root,row[0],expected_size=row[1],expected_mtime_ns=row[2],expected_identity=recorded_identity(*row[5:8]))
+                try:
+                    acquire_shared(fd)
+                    with limits.slot(self.archive_lock.parent,'archive-media-info',count=2):
+                        info=media.probe(fd,timeout=8)
+                finally:os.close(fd)
+            except limits.BusyError:raise APIError('429 Too Many Requests','Diagnostyka zajęta; spróbuj ponownie')
+            except (OSError,ValueError,MountBoundary,MountUnavailable):raise APIError('404 Not Found','Nagranie jest niedostępne lub zostało zmienione')
+            except media.MediaError:raise APIError('422 Unprocessable Entity','FFprobe nie rozpoznał poprawnego strumienia wideo w dostępnym czasie')
+            if not security.may_access(db,security.get_user(db,token),row[3]):raise APIError('403 Forbidden','Odmowa dostępu')
+            streams=[]
+            for item in info.get('streams',[]):
+                if item.get('codec_type') in ('video','audio'):
+                    streams.append({'type':item['codec_type'],'codec':str(item.get('codec_name') or 'unknown')[:64], 'tag':str(item.get('codec_tag_string') or '')[:32]})
+            return '200 OK',{'streams':streams},[]
         match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/file',url)
         if match and method in ('GET','HEAD'):
             rid=int(match.group(1))

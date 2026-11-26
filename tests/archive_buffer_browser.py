@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory() as directory:
         records=[{id:1,utc_first:'2026-11-25T12:00:00Z',utc_second:null,duration:4},{id:2,utc_first:'2026-11-25T12:00:04Z',utc_second:null,duration:4}];
         archiveSource=id=>sampleURLs[id-1];
         window.archiveTest={play:()=>playRecord(0,1,true,true),warm:warmArchiveNeighbours,seek:()=>playRecord(1,1,false,true),back:()=>playRecord(0,2,false,true),id:()=>archiveRecordId,count:()=>archiveBuffers.size,clear:clearArchiveBuffers,pending:()=>Boolean(archiveSwitch)};
-        archiveTest.play();''')
+        window.runArchiveTest=code=>eval(code);archiveTest.play();''')
         page.wait_for_function('document.querySelector("#archive-player").readyState>=2 && Math.abs(document.querySelector("#archive-player").currentTime-1)<0.15')
         page.evaluate('archiveTest.warm()');page.wait_for_function('archiveTest.count()===1 && document.querySelector(".archive-standby").readyState>=2')
         page.evaluate('window.oldVideo=document.querySelector("#archive-player");archiveTest.seek()')
@@ -38,6 +38,26 @@ with tempfile.TemporaryDirectory() as directory:
         assert page.evaluate('document.fullscreenElement?.id==="archive-stage"')
         page.locator('#archive-exit-fullscreen').click();page.wait_for_function('!document.fullscreenElement')
         page.evaluate('archiveTest.clear()');assert page.evaluate('archiveTest.count()===0 && document.querySelectorAll("#archive-stage video").length===1')
+        # Calendar renders a real month grid, disables empty days, and highlights indexed days.
+        page.evaluate("code=>runArchiveTest(code)","$('archive-date').value='2026-10-23';syncArchiveDateLabel();renderCalendar('2026-10',['2026-10-02','2026-10-23']);$('archive-calendar-panel').open=true;api=async()=>({days:['2026-10-02','2026-10-23']});$('archive-month').value='2026-10'")
+        page.wait_for_function("document.querySelectorAll('#calendar-days button.available').length===2")
+        assert page.locator('#calendar-days button').count()==31
+        assert page.locator('#calendar-days button:disabled').count()==29
+        assert page.locator('#calendar-days button[aria-current=date]').inner_text()=='23'
+        # Bad newest segment: actual HTML5 decoder fails, then previous real MP4 plays.
+        page.evaluate("code=>runArchiveTest(code)","""$('archive-calendar-panel').open=false;playbackGeneration++;clearArchiveBuffers();
+        const video=$('archive-player');video.pause();video.removeAttribute('src');video.load();
+        const day=cameraDay();$('archive-date').value=day;
+        const good={id:1,local_time:day+'T10:00:00',utc_first:day+'T09:00:00Z',utc_second:null,duration:4};
+        const bad={id:2,local_time:day+'T10:00:04',utc_first:day+'T09:00:04Z',utc_second:null,duration:4};
+        window.badURL=URL.createObjectURL(new Blob(['not a valid mp4'],{type:'video/mp4'}));
+        archiveSource=id=>id===2?badURL:sampleURLs[0];
+        api=async url=>url.includes('media-info')?{streams:[{type:'video',codec:'hevc',tag:'hev1'}]}:url.includes('/recordings?')?{recordings:[good,bad],next_cursor:null}:{events:[],next_cursor:null};
+        fetch=async()=>({ok:true,status:200,headers:{get:()=> 'video/mp4'}});
+        archiveRecordId=null;loadedArchiveDate=null;loadArchive(true);""")
+        page.wait_for_function("document.querySelector('#archive-player').readyState>=2 && !document.querySelector('#archive-player').paused && document.querySelector('#archive-playback-note').textContent.includes('Nagranie #2')", timeout=10000)
+        assert page.evaluate('archiveTest.id()===1')
+        assert 'hevc' in page.locator('#archive-playback-note').inner_text()
         assert not errors,errors
         browser.close()
         print('Chromium: real MP4 decoding, adjacent prefetch, forward/back seek while paused, full-screen video stage remains active, cleanup OK')

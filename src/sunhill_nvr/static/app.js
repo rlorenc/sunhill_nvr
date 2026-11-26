@@ -14,6 +14,8 @@ let archiveRecordId = null;
 let archiveRequestedDate = null;
 let archiveScrubbing = false;
 let calendarGeneration = 0;
+let archiveAutoRecovery=null;
+let archiveErrorGeneration=-1;
 let exportListGeneration = 0;
 let exportListPending = false;
 let exportListRefreshAgain = false;
@@ -254,7 +256,7 @@ function ensureLivePlayer(){
 let noticeTimer=null;
 function notify(message,kind='info') {
   clearTimeout(noticeTimer);$('notice').textContent=message||'';$('notice').dataset.kind=kind;
-  if(message&&kind!=='error')noticeTimer=setTimeout(()=>{$('notice').textContent='';noticeTimer=null;},10000);
+  if(message)noticeTimer=setTimeout(()=>{$('notice').textContent='';noticeTimer=null;},10000);
 }
 function cookie(name) {
   const item = document.cookie.split('; ').find((part) => part.startsWith(name + '='));
@@ -296,7 +298,7 @@ function cameraHealthText(camera){
 }
 function view(which) {
   const cameraWasHidden=$('camera-view').hidden;
-  if(which!=='archive'&&!$('archive-view').hidden){playbackGeneration++;archiveLoadGeneration++;clearTimeout(previewTimer);$('timeline-preview').hidden=true;$('archive-player').pause();clearArchiveBuffers();}
+  if(which!=='archive'&&!$('archive-view').hidden){playbackGeneration++;archiveLoadGeneration++;calendarGeneration++;archiveAutoRecovery=null;$('archive-calendar-panel').open=false;clearTimeout(previewTimer);$('timeline-preview').hidden=true;$('archive-player').pause();clearArchiveBuffers();}
   if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';
   for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
   if(which==='cameras'&&cameraWasHidden)renderCameras();
@@ -606,19 +608,46 @@ async function refreshExports(){
 }
 $('exports-refresh').addEventListener('click',refreshExports);
 setInterval(()=>{if(me&&!document.hidden&&!$('settings-view').hidden)refreshExports();},5000);
+function syncArchiveDateLabel(){
+  const day=$('archive-date').value;$('archive-date-label').textContent=day?day.split('-').reverse().join('.'):'Wybierz datę';
+}
+function renderCalendar(month,days){
+  const box=$('calendar-days');box.replaceChildren();
+  const match=/^(\d{4})-(\d{2})$/.exec(month);if(!match)return;
+  const year=Number(match[1]),m=Number(match[2]);if(year<1970||year>2099||m<1||m>12)return;
+  const first=new Date(Date.UTC(year,m-1,1)),count=new Date(Date.UTC(year,m,0)).getUTCDate(),available=new Set(days);
+  for(let n=0;n<(first.getUTCDay()+6)%7;n++)box.append(element('span',null,'archive-calendar-blank'));
+  for(let n=1;n<=count;n++){
+    const day=month+'-'+String(n).padStart(2,'0'),enabled=available.has(day),button=element('button',String(n),enabled?'archive-day available':'archive-day');button.type='button';button.disabled=!enabled;
+    button.setAttribute('aria-label',day+(enabled?' - nagrania dostępne':' - brak nagrań'));
+    if(day===$('archive-date').value)button.setAttribute('aria-current','date');
+    if(enabled)button.addEventListener('click',()=>{if(button.disabled)return;$('archive-date').value=day;syncArchiveDateLabel();$('archive-calendar-panel').open=false;loadArchive(true);});
+    box.append(button);
+  }
+}
 async function loadCalendar(){
   const generation=++calendarGeneration,camera=activeCamera,month=$('archive-month').value;
+  renderCalendar(month,[]);if(!camera)return;
+  $('archive-calendar-status').textContent='Wczytywanie dostępnych dni…';
+  const current=()=>generation===calendarGeneration&&camera===activeCamera&&month===$('archive-month').value;
   try{
     const result=await api(`/api/cameras/${camera.id}/calendar?month=${encodeURIComponent(month)}`);
-    if(generation!==calendarGeneration||camera!==activeCamera||month!==$('archive-month').value)return;
-    const box=$('calendar-days');box.replaceChildren();
-    for(const day of result.days){const button=element('button',day);button.type='button';button.addEventListener('click',()=>{$('archive-date').value=day;loadArchive(true);});box.append(button);}
-    if(!result.days.length)box.append(element('p','Brak nagrań w wybranym miesiącu.'));
-  }catch(error){if(generation===calendarGeneration&&camera===activeCamera&&month===$('archive-month').value)notify(error.message,'error');}
+    if(!current())return;
+    renderCalendar(month,result.days);$('archive-calendar-status').textContent=result.days.length?'Podświetlone dni zawierają nagrania.':'Brak nagrań w wybranym miesiącu.';
+  }catch(error){if(current())$('archive-calendar-status').textContent='Nie udało się pobrać dni: '+error.message;}
+}
+function changeArchiveMonth(delta){
+  const value=$('archive-month').value,parts=value.split('-').map(Number);if(parts.length!==2||!parts.every(Number.isFinite))return;
+  const target=new Date(Date.UTC(parts[0],parts[1]-1+delta,1)).toISOString().slice(0,7);if(target<'1970-01'||target>'2099-12')return;
+  $('archive-month').value=target;loadCalendar();
 }
 $('load-calendar').addEventListener('click',loadCalendar);
+$('archive-month').addEventListener('change',loadCalendar);
+$('archive-month-prev').addEventListener('click',()=>changeArchiveMonth(-1));
+$('archive-month-next').addEventListener('click',()=>changeArchiveMonth(1));
+$('archive-calendar-panel').addEventListener('keydown',event=>{if(event.key==='Escape'){$('archive-calendar-panel').open=false;$('archive-date-label').focus();}});
 function resetArchiveContents(){
-  clearArchiveBuffers();
+  clearArchiveBuffers();archiveAutoRecovery=null;setArchiveNote('');
   records=[];eventMarkers=[];recordPosition=0;archiveRecordId=null;archiveRequestedDate=null;archiveScrubbing=false;
   $('timeline-track').replaceChildren();$('events').replaceChildren();
   $('timeline-position').value='0';$('timeline-time').textContent='00:00:00';$('archive-status').textContent='';$('archive-events-status').textContent='';
@@ -633,6 +662,7 @@ function updateArchiveControls(){
   else $('archive-download').removeAttribute('href');
 }
 async function loadArchive(autoStart=false) {
+  syncArchiveDateLabel();
   const generation=++archiveLoadGeneration,date=$('archive-date').value,camera=activeCamera;
   if(!camera)return false;
   const player=$('archive-player');
@@ -656,7 +686,7 @@ async function loadArchive(autoStart=false) {
     if(autoStart===true&&archiveRecordId===null){
       const playable=records.map((record,index)=>({record,index})).filter(({record})=>record.utc_first&&!record.utc_second);
       const first=date===cameraDay()?playable[playable.length-1]:playable[0];
-      if(first){const spans=timelineSpans(first.record);const offset=spans.length?Math.max(0,spans[0][0]-seconds(first.record.local_time)):0;playRecord(first.index,offset,true);}
+      if(first){archiveAutoRecovery={camera,date,remaining:2,failures:[]};const spans=timelineSpans(first.record);const offset=spans.length?Math.max(0,spans[0][0]-seconds(first.record.local_time)):0;playRecord(first.index,offset,true);}
     }
     if(archiveRecordId===null)$('archive-status').textContent=records.length?'Wybierz czas nagrania na osi.':'Brak nagrań w wybranym dniu.';
     else if(playingId===archiveRecordId)$('archive-status').textContent='';
@@ -703,8 +733,42 @@ function warmArchiveNeighbours(){
   for(const id of archiveBuffers.keys())if(!wanted.has(id))disposeArchiveBuffer(id);
   for(const [id,[candidate,offset]] of wanted)if(!archiveBuffers.has(id))prepareArchiveBuffer(candidate,offset);
 }
+function setArchiveNote(message){const note=$('archive-playback-note');note.textContent=message;note.hidden=!message;}
+function archiveMediaMessage(error){
+  if(error?.name==='NotAllowedError')return 'Przeglądarka wymaga kliknięcia Odtwórz.';
+  switch(error?.code){case 1:return 'Odtwarzanie zostało przerwane.';case 2:return 'Błąd pobierania nagrania.';case 3:return 'Przeglądarka nie może zdekodować nagrania.';case 4:return 'Przeglądarka nie obsługuje źródła lub kodeka nagrania.';default:return error?.name==='NotSupportedError'?'Przeglądarka nie obsługuje źródła lub kodeka nagrania.':'Nie udało się odtworzyć nagrania.';}
+}
+async function diagnoseArchiveFailure(record,error,generation){
+  if(generation!==playbackGeneration||archiveErrorGeneration===generation)return;
+  archiveErrorGeneration=generation;
+  const camera=activeCamera,date=$('archive-date').value;
+  const current=()=>generation===playbackGeneration&&camera===activeCamera&&date===$('archive-date').value;
+  const base=archiveMediaMessage(error),label='Nagranie #'+record.id+' ('+record.local_time?.replace('T',' ')+')';
+  $('archive-status').textContent=base+' Sprawdzanie pliku…';
+  let detail='';
+  try{
+    const head=await fetch(archiveSource(record.id),{method:'HEAD',credentials:'same-origin',cache:'no-store'});
+    if(!head.ok)detail='HTTP '+head.status+' - serwer nie udostępnił pliku.';
+    else if(!head.headers.get('Content-Type')?.includes('video/mp4'))detail='Serwer nie zwrócił MP4.';
+    else{
+      const info=await api(`/api/recordings/${record.id}/media-info`);
+      detail=info.streams.map(item=>`${item.type}: ${item.codec}${item.tag?' ('+item.tag+')':''}`).join(', ');
+      if(detail)detail='HTTP '+head.status+'; '+detail+'.';
+    }
+  }catch(e){detail='Diagnostyka pliku: '+e.message;}
+  if(!current())return;
+  const message=label+': '+base+(detail?' '+detail:'');
+  const recovery=archiveAutoRecovery;
+  if(recovery&&recovery.camera===camera&&recovery.date===date&&recovery.remaining>0){
+    const index=records.findIndex(item=>item.id===record.id);let previous=index-1;
+    while(previous>=0&&(!records[previous].utc_first||records[previous].utc_second))previous--;
+    if(previous>=0){recovery.remaining--;recovery.failures.push(message);setArchiveNote(recovery.failures.join(' | ')+' Automatyczna próba odtworzenia wcześniejszego segmentu.');playRecord(previous,0,true);return;}
+  }
+  archiveAutoRecovery=null;setArchiveNote(message);$('archive-status').textContent=archiveRecordId===record.id?'Wybierz inny czas lub kliknij Odtwórz, aby ponowić próbę.':'Poprzedni fragment pozostaje dostępny. Wybierz czas ponownie.';updateArchiveControls();
+}
 function playRecord(index,offset=0,automatic=false,keepPaused=false) {
   const record=records[index];if(!record)return;
+  if(!automatic){archiveAutoRecovery=null;setArchiveNote('');}
   if(archiveSwitch){archiveSwitch.cancel();archiveSwitch=null;}
   const player=$('archive-player'),generation=++playbackGeneration,source=archiveSource(record.id);
   if(record.utc_first&&!record.utc_second){const instant=Date.parse(record.utc_first)/1000+offset;if(cameraDay(instant*1000)===$('archive-date').value){const position=eventSeconds(instant);$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);}}
@@ -713,17 +777,17 @@ function playRecord(index,offset=0,automatic=false,keepPaused=false) {
     recordPosition=records.findIndex(item=>item.id===record.id);if(recordPosition<0)return;
     archiveRecordId=record.id;target.playbackRate=Number($('playback-speed').value)||1;
     if(automatic)target.muted=true;
-    if(!keepPaused)target.play().catch(error=>{if(generation!==playbackGeneration)return;if(error.name==='NotAllowedError'&&!target.muted){target.muted=true;updateArchiveControls();target.play().catch(()=>{if(generation===playbackGeneration)$('archive-status').textContent='Kliknij Odtwórz, aby rozpocząć odtwarzanie.';});}else{$('archive-status').textContent='Kliknij Odtwórz, aby rozpocząć odtwarzanie.';updateArchiveControls();}});
+    if(!keepPaused)target.play().catch(error=>{if(generation!==playbackGeneration)return;if(error.name==='NotAllowedError'){const wasMuted=target.muted;target.muted=true;updateArchiveControls();const prompt=()=>{if(generation===playbackGeneration)$('archive-status').textContent='Kliknij Odtwórz, aby rozpocząć odtwarzanie.';};if(wasMuted)prompt();else target.play().catch(prompt);}else if(error.name!=='AbortError')void diagnoseArchiveFailure(record,target.error||error,generation);});
     else {$('archive-status').textContent='';target.pause();}
     updateArchiveControls();warmArchiveNeighbours();
   };
   // Initial load and same-file seek use the existing element; no redundant reload.
-  if(!canBufferArchive()||!player.currentSrc||player.readyState<2||player.currentSrc.endsWith(source)){
+  if(!canBufferArchive()||!player.currentSrc||player.error||player.readyState<2||player.currentSrc.endsWith(source)){
     recordPosition=index;archiveRecordId=record.id;
     $('archive-status').textContent='Wczytywanie obrazu…';if(automatic)player.muted=true;
     const start=()=>{if(generation!==playbackGeneration)return;player.currentTime=offset;commit(player);};
-    if(player.currentSrc&&player.currentSrc.endsWith(source)&&player.readyState>=1)start();
-    else{clearArchiveBuffers();player.addEventListener('loadedmetadata',start,{once:true});player.src=source;}
+    if(player.currentSrc&&player.currentSrc.endsWith(source)&&player.readyState>=1&&!player.error)start();
+    else{clearArchiveBuffers();player.addEventListener('loadedmetadata',start,{once:true});player.src=source;player.load?.();}
     updateArchiveControls();return;
   }
   // Do not change the active record or its actions until the replacement is ready.
@@ -734,7 +798,7 @@ function playRecord(index,offset=0,automatic=false,keepPaused=false) {
   let timer,finished=false;
   const cleanup=()=>{clearTimeout(timer);for(const event of ['loadeddata','canplay','seeked'])target.removeEventListener(event,ready);target.removeEventListener('error',fail);};
   const cancel=()=>{if(finished)return;finished=true;cleanup();};
-  const fail=()=>{if(finished)return;cancel();archiveSwitch=null;disposeArchiveBuffer(record.id);$('archive-status').textContent='Nie udało się przygotować fragmentu. Wybierz czas ponownie.';updateArchiveControls();};
+  const fail=()=>{if(finished)return;const error=target.error;cancel();archiveSwitch=null;disposeArchiveBuffer(record.id);$('archive-status').textContent='Nie udało się przygotować fragmentu. Poprzedni obraz pozostaje dostępny.';updateArchiveControls();if(error)void diagnoseArchiveFailure(record,error,generation);};
   const ready=()=>{
     if(finished||generation!==playbackGeneration)return;
     if(target.readyState<2||target.seeking||Math.abs(target.currentTime-offset)>0.2)return;
@@ -750,8 +814,8 @@ function playRecord(index,offset=0,automatic=false,keepPaused=false) {
   for(const event of ['loadeddata','canplay','seeked'])target.addEventListener(event,ready);target.addEventListener('error',fail);
   timer=setTimeout(fail,15000);if(target.error)fail();else ready();
 }
-$('archive-calendar-panel').addEventListener('toggle',()=>{if($('archive-calendar-panel').open&&activeCamera)loadCalendar();});
-$('archive-play').addEventListener('click',()=>{const player=$('archive-player');if(archiveRecordId===null)return;if(player.paused!==false){player.play().catch(error=>{$('archive-status').textContent=error.message;});}else player.pause();});
+$('archive-calendar-panel').addEventListener('toggle',()=>{if($('archive-calendar-panel').open&&activeCamera){$('archive-month').value=$('archive-date').value.slice(0,7);loadCalendar();}});
+$('archive-play').addEventListener('click',()=>{const player=$('archive-player'),record=records.find(item=>item.id===archiveRecordId);if(!record)return;archiveAutoRecovery=null;if(player.error||player.readyState===0){playRecord(records.indexOf(record),Number.isFinite(player.currentTime)?player.currentTime:0);return;}if(player.paused!==false){const generation=playbackGeneration;player.play().catch(error=>{if(generation!==playbackGeneration)return;if(error.name==='NotAllowedError')$('archive-status').textContent=archiveMediaMessage(error);else if(error.name!=='AbortError')void diagnoseArchiveFailure(record,player.error||error,generation);});}else player.pause();});
 $('archive-audio').addEventListener('click',()=>{const player=$('archive-player');player.muted=!player.muted;updateArchiveControls();});
 $('archive-volume').addEventListener('input',event=>{const player=$('archive-player');player.volume=Number(event.target.value);player.muted=player.volume===0;updateArchiveControls();});
 function toggleArchiveFullscreen(){const stage=$('archive-stage'),player=$('archive-player');try{if(document.fullscreenElement===stage||document.webkitFullscreenElement===stage){const exit=document.exitFullscreen||document.webkitExitFullscreen;Promise.resolve(exit.call(document)).catch(()=>notify('Nie udało się zamknąć pełnego ekranu.'));return;}const request=stage.requestFullscreen||stage.webkitRequestFullscreen;if(request){Promise.resolve(request.call(stage)).catch(()=>notify('Pełny ekran niedostępny.'));}else if(player.webkitEnterFullscreen)player.webkitEnterFullscreen();else notify('Pełny ekran niedostępny.');}catch{notify('Pełny ekran niedostępny.');}}
@@ -763,9 +827,9 @@ function bindArchiveMedia(video){
   video.addEventListener('click',()=>{if(active()&&archiveRecordId!==null)$('archive-play').click();});
   video.addEventListener('keydown',event=>{if(active()&&(event.key===' '||event.key==='Enter')){event.preventDefault();if(archiveRecordId!==null)$('archive-play').click();}});
   for(const event of ['play','pause','volumechange'])video.addEventListener(event,()=>{if(active())updateArchiveControls();});
-  video.addEventListener('playing',()=>{if(active()&&!archiveSwitch){$('archive-status').textContent='';updateArchiveControls();warmArchiveNeighbours();}});
+  video.addEventListener('playing',()=>{if(active()&&!archiveSwitch){archiveAutoRecovery=null;$('archive-status').textContent='';updateArchiveControls();warmArchiveNeighbours();}});
   video.addEventListener('waiting',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null)$('archive-status').textContent='Buforowanie obrazu…';});
-  video.addEventListener('error',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null)$('archive-status').textContent='Nie udało się odtworzyć nagrania. Wybierz inny czas lub ponów odtwarzanie.';});
+  video.addEventListener('error',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null){const record=records.find(item=>item.id===archiveRecordId);if(record)void diagnoseArchiveFailure(record,video.error,playbackGeneration);}});
   video.addEventListener('ended',()=>{if(active()&&!archiveSwitch)playNextRecording().catch(error=>notify(error.message,'error'));});
   video.addEventListener('timeupdate',()=>{if(!active()||archiveScrubbing||archiveSwitch)return;const record=records[recordPosition];if(!record||!video.currentSrc||!record.utc_first||record.utc_second)return;const instant=Date.parse(record.utc_first)+video.currentTime*1000;if(!Number.isFinite(instant)||cameraDay(instant)!==$('archive-date').value)return;const position=eventSeconds(instant/1000);$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);warmArchiveNeighbours();});
 }
@@ -1375,7 +1439,10 @@ async function pollIndex(){
   }catch(error){/* storage updates can briefly interrupt polling */}finally{indexPollPending=false;}
 }
 $('archive-index-run').addEventListener('click',async()=>{
-  try{renderIndexState(await api('/api/settings/index','POST',{action:'start',camera:$('archive-index-camera').value||null,start:$('archive-index-start').value||null,end:$('archive-index-end').value||null}));}catch(error){notify(error.message,'error');}
+  const start=$('archive-index-start').value||null,end=$('archive-index-end').value||null;
+  if(Boolean(start)!==Boolean(end)){notify('Podaj obie daty indeksowania lub pozostaw obie puste.','error');return;}
+  if(start&&end&&start>end){notify('Data początkowa nie może być późniejsza niż końcowa.','error');return;}
+  try{renderIndexState(await api('/api/settings/index','POST',{action:'start',camera:$('archive-index-camera').value||null,start,end}));}catch(error){notify(error.message,'error');}
 });
 $('archive-index-pause').addEventListener('click',async()=>{
   try{renderIndexState(await api('/api/settings/index','POST',{action:'pause'}));}catch(error){notify(error.message,'error');}

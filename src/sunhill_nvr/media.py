@@ -33,12 +33,12 @@ def _source_argument(source: Path | int) -> str:
         return f'/proc/self/fd/{source}' if sys.platform.startswith('linux') else f'/dev/fd/{source}'
     return str(source)
 
-def probe(path: Path | int, *, ffprobe: str = 'ffprobe') -> dict:
+def probe(path: Path | int, *, ffprobe: str = 'ffprobe', timeout: float = 60) -> dict:
     pass_fds=(path,) if isinstance(path,int) else ()
     try:
         p = subprocess.run([ffprobe, '-v', 'error', '-show_streams', '-show_format',
                             '-of', 'json', '-protocol_whitelist', 'file,pipe', '-i', _source_argument(path)], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=True, pass_fds=pass_fds)
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True, pass_fds=pass_fds)
         data = json.loads(p.stdout)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise MediaError('Cannot inspect recording') from exc

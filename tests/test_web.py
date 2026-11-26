@@ -587,6 +587,26 @@ class WebTests(unittest.TestCase):
     clock[0]=6
     with self.assertRaises(StopIteration):next(chunks)
     self.assertIsNone(stream.fd);db.close()
+ def test_archive_media_info_checks_access_and_file_identity(self):
+    from unittest.mock import patch
+    from sunhill_nvr.media import MediaError
+    cookie,csrf=self.login()
+    _,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x/test'},cookie,csrf);cid=json.loads(body)['id']
+    file=self.root/'cam/2026/11/21/190900.mp4';file.parent.mkdir(parents=True);file.write_bytes(b'fixture')
+    db=database.open_db(self.file);archive.refresh(db,self.root,'Europe/Warsaw',inspect_duration=lambda p:10,is_open=lambda p:False,mount_check=lambda:True,min_age_seconds=0)
+    rid=db.execute('SELECT id FROM recordings').fetchone()[0];uid=security.create_user(db,'viewer','viewer-test-password','viewer');session=security.authenticate(db,'viewer','viewer-test-password','fixture');db.close()
+    url=f'/api/recordings/{rid}/media-info';viewer='sunhill_session='+session.token
+    with patch('sunhill_nvr.media.probe',return_value={'streams':[{'codec_type':'video','codec_name':'hevc','codec_tag_string':'hev1','secret':'not returned'}]}) as probe:
+        self.assertEqual(self.call(url,cookie=viewer)[0]['status'],'403 Forbidden');probe.assert_not_called()
+        db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES (?,?,0)',(uid,cid));db.commit();db.close()
+        r,b=self.call(url,cookie=viewer);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b),{'streams':[{'type':'video','codec':'hevc','tag':'hev1'}]})
+        self.assertEqual(probe.call_args.kwargs['timeout'],8)
+        self.assertEqual(self.call(url,cookie=cookie,extra={'QUERY_STRING':'extra=1'})[0]['status'],'400 Bad Request')
+    with patch('sunhill_nvr.media.probe',side_effect=MediaError('invalid')):
+        self.assertEqual(self.call(url,cookie=cookie)[0]['status'],'422 Unprocessable Entity')
+    file.write_bytes(b'changed fixture')
+    with patch('sunhill_nvr.media.probe') as probe:
+        self.assertEqual(self.call(url,cookie=cookie)[0]['status'],'404 Not Found');probe.assert_not_called()
  def test_calendar_shows_days_crossed_by_a_recording(self):
     cookie,csrf=self.login()
     _,body=self.call('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://x/test'},cookie,csrf);cid=json.loads(body)['id']

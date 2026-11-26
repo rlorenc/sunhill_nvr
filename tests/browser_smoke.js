@@ -459,6 +459,15 @@ eval(code+`
   api=async (url,method,data)=>{if(url==='/api/settings/index'&&method==='POST')indexPayload=data;return {state:data?.action==='pause'?'paused':'queued'};};
   await $('archive-index-run').listeners.click();if(indexPayload.camera!=='cam'||indexPayload.start!=='2026-11-13'||indexPayload.end!=='2026-11-14')throw new Error('index request lost scope');
   await $('archive-index-pause').listeners.click();if(indexPayload.action!=='pause'||!$('archive-index-progress').hidden)throw new Error('index pause failed');
+  // All top-level notification variants expire; newest notification gets its own full interval.
+  let timerId=0;const pendingTimers=new Map();globalThis.setTimeout=(fn,ms)=>{const id=++timerId;pendingTimers.set(id,{fn,ms});return id;};globalThis.clearTimeout=id=>pendingTimers.delete(id);
+  notify('Pierwszy','success');const firstTimer=noticeTimer;notify('Nieprawidłowy zakres indeksowania','error');
+  if(pendingTimers.has(firstTimer)||pendingTimers.get(noticeTimer)?.ms!==10000||$('notice').dataset.kind!=='error')throw new Error('notification expiry or reset missing');
+  pendingTimers.get(noticeTimer).fn();if($('notice').textContent||noticeTimer!==null)throw new Error('error notice did not expire');
+  $('archive-date').value='2026-10-23';renderCalendar('2026-10',['2026-10-02','2026-10-23']);
+  const days=$('calendar-days').children.filter(x=>x.className?.startsWith('archive-day'));
+  if(days.length!==31||days.filter(x=>!x.disabled).map(x=>x.textContent).join(',')!=='2,23')throw new Error('calendar exposed dates without recordings');
+  renderCalendar('2026-02',[]);if($('calendar-days').children.filter(x=>x.className?.startsWith('archive-day')).some(x=>!x.disabled))throw new Error('empty calendar enabled dates');
   print('archive smoke test passed');
 })().catch(error=>{print(String(error));quit(1);});
 `);
