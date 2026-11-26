@@ -1,5 +1,9 @@
 # Wydania od 0.2.0
 
+## Aktualizacja bieżących instalacji (od 0.3.12)
+
+Standardowo uruchom `bash install.sh --update` z rozpakowanego nowszego wydania. Nie używaj opcji naprawczych do sprawnej instalacji. W razie niedokończonego rollbacku zachowaj logi i kopie; specjalna opcja `--update --repair` została wprowadzona w 0.3.12 dla terminalnego rollbacku. Administrator potwierdził jej skuteczne wykonanie przy przejściu z 0.3.9 do 0.3.12. Szczegóły warunków i zakresu w STATUS.md oraz HANDOVER.md. Stare instrukcje README (0.3.3 i wcześniejsze) pozostają w historii: `git show d56687c:README.md`.
+
 Wersja SemVer w src/sunhill_nvr/__init__.py, widoczna w aplikacji. Aktualizacje ręczne, bez klucza podpisującego. Każde wydanie jest TAR.GZ z manifestem SHA-256 aplikacji oraz pełnym Git bundle. Nie jest to kryptograficzny dowód pochodzenia: pobieraj paczki tylko z zaufanego źródła.
 
 Od wersji 0.2.3 paczka rozpakowuje się do `sunhill-nvr-WERSJA/`. Czytnik 0.2.3 akceptuje też historyczny katalog `sunhill-nvr/` i odrzuca mieszane katalogi oraz niezgodność wersji katalogu i manifestu. Starsze recovery 0.2.0–0.2.2 nie odczyta nowego formatu; przed aktualizacją potrzebny jest osobny pomost zgodności albo migracja recovery. Nie zweryfikowano tego przejścia na Ubuntu.

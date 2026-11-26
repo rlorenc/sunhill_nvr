@@ -1,8 +1,7 @@
 # Uzgodniony zakres Sunhill NVR
 
 Lista odtworzona z wcześniejszych ustaleń, według numeracji 1-80. Statusy opisują
-stan kodu, nie potwierdzenie gotowości produkcyjnej. Całość wymaga jeszcze testu
-na docelowym Ubuntu i rzeczywistych kamerach.
+stan realizacji poszczególnych wymagań. System jest eksploatowany w rzeczywistej instalacji 11 kamer; administrator potwierdził działanie aktualizacji naprawczej 0.3.12, zapisu RTSP i publikowania segmentów oraz nowej struktury katalogów. Zakres potwierdzenia i pozostałe scenariusze opisano w STATUS.md.
 
 - K - kod funkcji jest obecny, lecz wymaga testu integracyjnego.
 - C - funkcja jest niepełna lub istnieją tylko jej elementy.

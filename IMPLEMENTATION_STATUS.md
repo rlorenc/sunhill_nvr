@@ -1,5 +1,9 @@
 # Macierz zgodności: założenia a kod
 
+## 0.3.14 - potwierdzenie eksploatacji
+
+Rzeczywista instalacja 0.3.12: 11 kamer RTSP, publikacja segmentów, nowe ścieżki i naprawcza aktualizacja potwierdzone przez administratora. Szczegóły w STATUS.md. Bez zmiany kodu funkcjonalnego ani statusów K/C/N.
+
 ## Kandydat 0.3.13 - przyrostowe indeksowanie importowanych nagrań
 
 Baza `dec5ed2` (0.3.12). Decyzja użytkownika: import historycznych plików `HHMMSS.mp4` z katalogów kamera/YYYY/MM/DD, widoczność w trakcie skanowania, ręczny wybór kamery i dat, wstrzymanie oraz liczniki. Indeksator używa iteratora zamiast globalnej listy nagrań, odczytu cache tylko dla bieżącej partii i zapisuje niezależne partie do 64 plików (limit RPC; dodatkowy limit rozmiaru JSON). Długość i audio nadal po rzeczywistym FFprobe z deskryptorem; tożsamość, blokada archiwum, montowanie, ochrona przed symlinkami i aktywnymi plikami pozostają. Przerwanie zachowuje zatwierdzone partie, pełny skan po wznowieniu korzysta z cache; usuwanie nieistniejących wpisów dopiero po pełnym przebiegu, partiami. Równoległa publikacja RTSP pozostaje bez zmian; podczas długiego skanu wykonywany jest również okresowy skan ostatnich dni dla FTP. Administrator może zlecić skan wszystkich lub jednej kamery i zakresu dat, wstrzymać skan historyczny i odczytać stan z system_settings; nie ma nowego schematu SQLite ani nowej usługi. Licznik przetworzonych, zaakceptowanych, bez zmian, otwartych i błędnych, średnia prędkość, pasek nieokreślony podczas skanu (bez dodatkowego pełnego liczenia plików i bez pozornego procentu). Zwykły update z działającej 0.3.12, bez repair, bez refresh-recovery; przed aktualizacją zalecane zatrzymanie starego indeksatora i weryfikacja MainPID=0 z uwagi na jego wcześniejszy timeout SIGTERM. Konfiguracja, staging, eksporty, recovery, nagrywanie i fizyczne MP4 bez zmian; aktualizator standardowo zatrzymuje usługi na czas aktualizacji.
