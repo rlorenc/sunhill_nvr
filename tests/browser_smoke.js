@@ -1,0 +1,464 @@
+// Small DOM stub for exercising archive navigation without network access.
+// It supplements, but does not replace, tests in an actual browser.
+if(typeof print==='undefined')globalThis.print=(message)=>console.log(message);
+if(typeof quit==='undefined')globalThis.quit=(code)=>{process.exitCode=code;};
+const nodes = new Map();
+function node() {
+  return {
+    value:'',textContent:'',hidden:false,style:{setProperty(key,value){this[key]=value;},removeProperty(key){delete this[key];}},dataset:{},currentTime:0,currentSrc:'',
+    listeners:{},children:[],
+    addEventListener(name,handler){this.listeners[name]=handler;},
+    append(...items){this.children.push(...items);},
+    add(item){this.children.push(item);},
+    replaceWith(item){this.replacement=item;},
+    replaceChildren(...items){this.children=items;},
+    removeAttribute(name){if(name==='src'){this.src='';this.currentSrc='';}},
+    pause(){},play(){return Promise.resolve();},
+    querySelector(){return node();},querySelectorAll(){return [];},
+    setAttribute(){},classList:{toggle(){return false;}},
+  };
+}
+globalThis.document={
+  cookie:'',hidden:false,
+  getElementById(id){if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);},
+  querySelectorAll(){return [];},querySelector(){return null;},
+  createElement(){return node();},createTextNode(text){return text;},
+};
+globalThis.Option=function(text,value){this.textContent=text;this.value=value;};
+globalThis.location={origin:'https://nvr.example',reload(){}};
+globalThis.window={confirm(){return true;}};
+globalThis.performance={now(){return 0;}};
+globalThis.fetch=()=>new Promise(()=>{});
+globalThis.setInterval=()=>1;
+globalThis.setTimeout=()=>1;
+globalThis.clearTimeout=()=>{};
+globalThis.clearInterval=()=>{};
+
+const code=typeof readFile==='function'?readFile('src/sunhill_nvr/static/app.js'):require('node:fs').readFileSync('src/sunhill_nvr/static/app.js','utf8');
+eval(code+`
+(async()=>{
+  me={timezone:'Europe/Warsaw'};
+  api=async()=>({origin:'https://nvr.example',supported:false,pending:false,status:{state:'idle',message:''}});
+  await refreshDomain();
+  if(!$('domain-current').textContent.includes('https://nvr.example')||!$('domain-status').textContent.includes('migracji'))throw new Error('domain settings status missing');
+  activeCamera={id:1,name:'Brama',may_download:false};
+  $('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
+  const previous={id:11,local_time:'2026-11-21T23:59:58',utc_first:'2026-11-21T22:59:58+00:00',utc_second:null,duration:2,protected:false};
+  const following={id:12,local_time:'2026-11-22T00:00:00',utc_first:'2026-11-21T23:00:00+00:00',utc_second:null,duration:2,protected:false};
+  api=async url=>url.includes('cursor=')?{recordings:[following],next_cursor:null}:{recordings:[previous],next_cursor:'first|11'};
+  const pages=await archivePages('/api/cameras/1/recordings?date=2026-11-21','recordings');
+  if(pages.recordings.length!==2||pages.recordings[1].id!==12)throw new Error('archive pagination omitted later recordings');
+  api=async()=>({events:[],next_cursor:'repeated'});let repeatedRejected=false;
+  try{await archivePages('/api/events?date=2026-11-21','events');}catch{repeatedRejected=true;}
+  if(!repeatedRejected)throw new Error('repeated archive cursor did not stop paging');
+  let wanted=true,pageCalls=0;api=async()=>{pageCalls++;wanted=false;return {recordings:[previous],next_cursor:'another'};};
+  const stopped=await archivePages('/api/recordings?date=2026-11-21','recordings',()=>wanted);
+  if(pageCalls!==1||stopped.recordings.length)throw new Error('obsolete archive pagination continued');
+  records=[previous];recordPosition=0;
+  api=async (url)=>url.includes('/next-recording?')?{recording:following}:url.includes('/recordings?')?{recordings:[following]}:{events:[]};
+  await playNextRecording();
+  if($('archive-date').value!=='2026-11-22'||!$('archive-player').src.endsWith('/12/file'))throw new Error('midnight transition failed');
+  if(cameraDay(Date.parse('2026-11-21T23:10:00Z'))!=='2026-11-22')throw new Error('camera timezone date failed');
+  records=[previous];recordPosition=0;$('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
+  $('archive-player').currentSrc='https://nvr.example/11/file';$('archive-player').currentTime=1;
+  await seekArchive(1);
+  if($('archive-date').value!=='2026-11-22'||!$('archive-player').src.endsWith('/12/file'))throw new Error('midnight seek failed');
+  // A same-day archive refresh must not silently change the playing recording.
+  records=[previous,following];recordPosition=1;loadedArchiveDate='2026-11-22';$('archive-date').value='2026-11-22';
+  $('archive-player').currentSrc='https://nvr.example/api/recordings/12/file';
+  api=async url=>url.includes('/recordings?')?{recordings:[following]}:{events:[]};
+  if(!await loadArchive()||records[recordPosition].id!==12)throw new Error('archive refresh shifted playing record');
+  api=async url=>url.includes('/recordings?')?{recordings:[]}:{events:[]};
+  if(!await loadArchive()||$('archive-player').currentSrc)throw new Error('removed recording left stale playback context');
+  if(!cameraHealthText({enabled:true,health:'clock_skew'}).includes('nieprawidłowy czas'))throw new Error('clock warning missing');
+  if(!cameraHealthText({enabled:true,health:'recording',recording_pause_reason:'disk_low'}).includes('wstrzymany - mało miejsca'))throw new Error('recording pause warning missing');
+  if(!cameraHealthText({enabled:true,stream_health:'available',stream_gateway_failed:true}).includes('bramka niedostępna'))throw new Error('gateway failure masked by old stream state');
+  $('camera-view').hidden=false;const badge=node();const card={dataset:{cameraId:'1'},querySelector(selector){return selector==='.health'?badge:null;}};
+  $('cameras').querySelectorAll=()=>[card];cameras=[{id:1,name:'Brama',slug:'cam',enabled:true,sub_configured:false,may_download:true,health:'recording'}];
+  api=async()=>({cameras:[{...cameras[0],health:'stale'}]});await refreshCameraStatus();
+  if(!badge.title.includes('brak nowych plików'))throw new Error('camera health did not refresh');
+  const originalLayouts=refreshLayouts,originalRender=renderCameras;let rerendered=false;
+  refreshLayouts=async()=>{};renderCameras=()=>{rerendered=true;};api=async()=>({cameras:[]});await refreshCameraStatus();
+  if(!rerendered||cameras.length)throw new Error('camera access changes did not update the grid');
+  refreshLayouts=originalLayouts;renderCameras=originalRender;$('cameras').querySelectorAll=()=>[];
+  api=async()=>({jobs:[{id:7,camera:'Brama',created:1795260000,status:'done',progress:1,download_ready:true}]});
+  await refreshExports();
+  if($('exports-list').children.length!==1||$('exports-list').children[0].children[1].href!=='/api/export-jobs/7/file')throw new Error('export list recovery failed');
+  let removedExport=false;api=async (url,method)=>{if(method==='DELETE'){removedExport=url==='/api/export-jobs/7';return {ok:true};}return {jobs:[]};};
+  await $('exports-list').children[0].children[2].listeners.click();
+  if(!removedExport)throw new Error('export deletion control failed');
+  let cancelRequest=false;api=async (url,method)=>{if(method==='POST'){cancelRequest=url==='/api/export-jobs/8/cancel';return {ok:true};}return {jobs:[{id:8,camera:'Brama',created:1795260000,status:'running',progress:.4,download_ready:false}]};};
+  await refreshExports();const cancelButton=$('exports-list').children[0].children.find(item=>item.textContent==='Anuluj eksport');
+  if(!cancelButton)throw new Error('running export has no cancel control');await cancelButton.listeners.click();
+  if(!cancelRequest)throw new Error('running export cancellation request missing');
+  let paused=false;$('archive-player').pause=()=>{paused=true;};$('archive-view').hidden=false;
+  view('admin');if(!paused)throw new Error('archive playback continued in another view');
+  cameras=[{id:1,name:'Brama'}];$('sync-start').value='2026-11-21T12:00:00';
+  $('sync-cameras').querySelectorAll=()=>[{value:'1'}];
+  let finishRequest;api=()=>new Promise(resolve=>{finishRequest=resolve;});
+  const preparing=prepareSync();stopSync();finishRequest({recordings:[]});await preparing;
+  if(syncItems.length||$('sync-grid').children.length)throw new Error('stale sync request repopulated view');
+  let played=false;const video=node();video.play=()=>{played=true;return Promise.resolve();};
+  syncItems=[{video,status:node(),records:[{id:31,local_time:'2026-11-21T12:00:00',utc_first:'2026-11-21T11:00:00Z',duration:60,utc_second:null}],active:null}];
+  syncDay='2026-11-21';syncPlaying=true;syncBase=Date.parse('2026-11-21T11:00:00Z')/1000;syncStarted=0;tickSync();pauseSync();video.listeners.loadedmetadata();
+  if(played)throw new Error('paused synchronized player resumed on delayed metadata');
+  const nextVideo=node(),nextStatus=node();syncItems=[{id:1,video:nextVideo,status:nextStatus,records:[previous],active:null}];
+  syncDay='2026-11-21';syncPlaying=true;syncBase=Date.parse('2026-11-21T23:00:00Z')/1000;syncStarted=0;
+  api=async()=>({recordings:[following]});await loadSyncDay('2026-11-22');tickSync();
+  if(syncDay!=='2026-11-22'||!nextVideo.src.endsWith('/12/file'))throw new Error('synchronized midnight transition failed');
+  const early={id:20,local_time:'2026-11-21T20:00:00',utc_first:'2026-11-21T19:00:00Z',utc_second:null,duration:60};
+  records=[early];recordPosition=0;$('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
+  api=async url=>url.includes('/next-recording?')?{recording:following}:url.includes('/recordings?')?{recordings:[following]}:{events:[]};await playNextRecording();
+  if($('archive-date').value!=='2026-11-22'||!$('archive-player').src.endsWith('/12/file'))throw new Error('transition over midnight gap failed');
+  records=[early];recordPosition=0;$('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
+  api=async url=>url.includes('/next-recording?')?{recording:null}:url.includes('/recordings?')?{recordings:[]}:{events:[]};await playNextRecording();
+  if($('archive-date').value!=='2026-11-21')throw new Error('empty next day changed date');
+  const later={id:13,local_time:'2026-12-02T12:00:00',utc_first:'2026-12-02T11:00:00Z',utc_second:null,duration:60};
+  records=[early];recordPosition=0;$('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
+  api=async url=>url.includes('/next-recording?')?{recording:later}:url.includes('/recordings?')?{recordings:[later]}:{events:[]};await playNextRecording();
+  if($('archive-date').value!=='2026-12-02'||!$('archive-player').src.endsWith('/13/file'))throw new Error('multi-day gap transition failed');
+  stopSync();cameras=[{id:1,name:'Brama'},{id:2,name:'Dom'}];$('sync-start').value='2026-10-25T02:30:00';$('sync-fold').value='1';
+  $('sync-cameras').querySelectorAll=()=>[{value:'1'},{value:'2'}];let resolvedInput=null;
+  api=async (url,method,data)=>{if(url==='/api/time/resolve'){resolvedInput=data;return {utc:'2026-10-25T01:30:00+00:00'};}return {recordings:[]};};
+  await prepareSync();
+  if(resolvedInput.fold!==1||syncItems.length!==2||syncSeconds!==Date.parse('2026-10-25T01:30:00Z')/1000)throw new Error('synchronized DST start failed');
+  const repeated={id:55,utc_first:'2026-10-25T00:30:00Z',utc_second:'2026-10-25T01:30:00Z',duration:30};
+  if(!containsInstant(repeated,Date.parse('2026-10-25T01:30:10Z')/1000))throw new Error('second DST occurrence was not detected');
+  if(containsInstant(repeated,Date.parse('2026-10-25T02:30:10Z')/1000))throw new Error('false DST match');
+  records=[];eventMarkers=[{type:'person',timestamp:1795260000},{type:'vehicle',timestamp:1795260030}];$('event-filter').value='person';
+  $('event-filter').listeners.change();
+  const markers=$('timeline-track').children.filter(item=>item.className==='timeline-event');
+  if(markers.length!==1||markers[0].title!=='person'||$('events').children.length!==1)throw new Error('event filter did not filter timeline and list');
+  $('archive-date').value='2026-10-25';loadedArchiveDate='2026-10-25';
+  records=[{id:56,local_time:'2026-10-25T02:30:00',utc_first:'2026-10-25T00:30:00Z',utc_second:null,duration:60},{id:57,local_time:'2026-10-25T02:30:00',utc_first:'2026-10-25T01:30:00Z',utc_second:null,duration:60}];
+  api=async (url,method,data)=>{if(data.fold===null)throw new Error('Wybierz wystąpienie');return {utc:data.fold===0?'2026-10-25T00:30:20Z':'2026-10-25T01:30:20Z'};};
+  eventMarkers=[{type:'person',timestamp:Date.parse('2026-10-25T01:30:20Z')/1000,fold:1}];$('event-filter').value='person';renderEvents();
+  if(!$('events').children[0].textContent.includes('2. wystąpienie'))throw new Error('repeated event occurrence missing');
+  $('timeline-fold').value='0';$('events').children[0].listeners.click();
+  if($('timeline-fold').value!=='1'||timelineSelection.fold!=='1'||timelineSelection.position!==9020||!$('archive-player').src.endsWith('/57/file'))throw new Error('event did not set matching repeated hour and export selection');
+  clearTimelineSelection();
+  $('timeline-fold').value='0';let match=await timelineMatch(9020);if(match.index!==0||match.offset!==20)throw new Error('first repeated timeline hour failed');
+  $('timeline-fold').value='1';match=await timelineMatch(9020);if(match.index!==1||match.offset!==20)throw new Error('second repeated timeline hour failed');
+  $('timeline-fold').value='';let ambiguous=false;try{await timelineMatch(9020);}catch(error){ambiguous=true;}if(!ambiguous)throw new Error('ambiguous time was silently selected');
+  records=[{id:58,local_time:'2026-10-25T02:59:50',utc_first:'2026-10-25T00:59:50Z',utc_second:null,duration:30}];recordPosition=0;
+  const spans=timelineSpans(records[0]);if(spans.length!==2||Math.abs(spans[0][0]-10790)>0.01||Math.abs(spans[1][0]-7200)>0.01)throw new Error('timeline coverage did not split at the DST transition');
+  $('archive-player').currentSrc='https://nvr.example/58/file';$('archive-player').currentTime=20;$('archive-player').listeners.timeupdate();
+  if($('timeline-time').textContent!=='02:00:10')throw new Error('timeline did not follow the DST clock transition');
+  $('export-form').elements={start:{value:''},end:{value:''},start_fold:{value:''},end_fold:{value:''}};
+  $('archive-date').value='2026-11-21';$('timeline-fold').value='';
+  $('timeline-position').listeners.input({target:{value:'68940'}});
+  $('timeline-position').value='68942'; // A delayed player update must not change the selected boundary.
+  $('set-export-start').listeners.click();
+  if($('export-form').elements.start.value!=='2026-11-21T19:09:00')throw new Error('playback overwrote the selected export boundary');
+  $('set-export-end').listeners.click();
+  if($('export-form').elements.end.value!=='2026-11-21T19:09:02')throw new Error('playback position was not restored after marking boundary');
+  api=async()=>({state:'rotation_blocked',history:[{state:'rotation_blocked',created:100,before:0,after:0,files_count:0,protected_count:2,protected_bytes:4000000000}]});
+  await refreshRotation();if(!$('rotation-state').textContent.includes('2 chronionych')||!$('rotation-state').textContent.includes('4.00 GB'))throw new Error('protected rotation warning missing');
+  api=async url=>url==='/api/rotation/previews'?{id:1}:{status:'done',result:{before:100,after:100,files_count:0,files:[],reached_target:true,protected_count:2,protected_bytes:4000000000,unknown_time_count:0}};
+  await $('rotation-preview').listeners.click();
+  if(!$('rotation-preview-result').children.some(node=>node.textContent.includes('Chronione pliki: 2')))throw new Error('protected files hidden when rotation is unnecessary');
+  cameras=[{id:1,name:'Brama'}];api=async()=>({services:[],system:[{name:'clock:1',state:'clock_skew'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent==='Różnica czasu kamery: Brama'))throw new Error('camera clock alert missing');
+  api=async()=>({services:[],system:[{name:'clock:1',state:'clock_unavailable'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent==='Nie można odczytać czasu ONVIF: Brama'))throw new Error('ONVIF error missing');
+  api=async()=>({services:[],system:[{name:'clock:1',state:'unknown',fresh:false}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent==='Brak aktualnego odczytu czasu ONVIF: Brama'))throw new Error('stale ONVIF state was not reported');
+  api=async()=>({services:[],system:[{name:'ha_delivery',state:'ha_delivery_error'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('Home Assistanta')))throw new Error('Home Assistant delivery warning missing');
+  api=async()=>({services:[{name:'sunhill-index.service',state:'active',fresh:false}],system:[]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('brak aktualnych danych')))throw new Error('stale service status presented as active');
+  let monitoringUpdate=null;api=async (url,method,data)=>{monitoringUpdate={url,method,data};return {ok:true};};
+  $('monitoring-form').elements={stale_after:{value:'1800'}};
+  await $('monitoring-form').listeners.submit({preventDefault(){},target:$('monitoring-form')});
+  if(!monitoringUpdate||monitoringUpdate.url!=='/api/settings/monitoring'||monitoringUpdate.method!=='PATCH'||monitoringUpdate.data.stale_after!==1800)throw new Error('recording alarm setting was not saved');
+  monitoringUpdate=null;$('monitoring-form').elements.stale_after.value='59';
+  await $('monitoring-form').listeners.submit({preventDefault(){},target:$('monitoring-form')});
+  if(monitoringUpdate)throw new Error('invalid recording alarm setting was sent');
+  cameras=[{id:1,name:'Brama',slug:'brama'}];api=async()=>({services:[],system:[{name:'recorder_corrupt:brama',state:'recording_corrupt'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('segmentu RTSP: Brama')))throw new Error('corrupt recording warning missing');
+  api=async()=>({services:[],system:[{name:'recorder_publish:brama',state:'recording_publish_error'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('zapisać segmentu RTSP w archiwum: Brama')))throw new Error('recording publication warning missing');
+  api=async()=>({services:[],system:[{name:'recorder_staging:brama',state:'recording_staging_error'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('katalogu zapisu RTSP: Brama')))throw new Error('staging warning missing');
+  api=async()=>({services:[],system:[{name:'recorder_process:brama',state:'recording_process_error'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('procesu nagrywania RTSP: Brama')))throw new Error('recording process warning missing');
+  api=async()=>({services:[],system:[{name:'recorder_audio:brama',state:'recording_audio_missing'}]});await refreshServices();
+  if(!$('service-status').children.some(node=>node.textContent.includes('nie ma ścieżki audio: Brama')))throw new Error('missing audio warning missing');
+  let previewCallback;globalThis.setTimeout=fn=>{previewCallback=fn;return 1;};
+  $('archive-date').value='2026-11-21';records=[previous];activeCamera={id:1};
+  $('timeline-position').listeners.input({target:{value:'86398'}});
+  $('timeline-preview').hidden=true;records=[];previewCallback();
+  if(!$('timeline-preview').hidden)throw new Error('stale timeline preview remained visible');
+  activeCamera={id:1};$('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';records=[previous];eventMarkers=[{type:'person',timestamp:1}];
+  api=async()=>{throw new Error('network error');};await loadArchive();
+  if(records.length!==1||eventMarkers.length!==1)throw new Error('failed same-day refresh discarded the visible data');
+  $('archive-date').value='2026-11-22';await loadArchive();
+  if(records.length||eventMarkers.length||loadedArchiveDate!==null||$('timeline-track').children.length||$('events').children.length)throw new Error('failed date change retained the previous day');
+  const delayedArchive=[];api=()=>new Promise(resolve=>{delayedArchive.push(resolve);});
+  const loadingOldDate=loadArchive();$('archive-date').value='2026-11-23';delayedArchive[0]({recordings:[previous]});
+  if(await loadingOldDate||records.length)throw new Error('old archive response overwrote an edited date');
+  const previousFormData=formData,previousRefreshExports=refreshExports;
+  formData=()=>({start:'2026-11-21T19:00:00',end:'2026-11-21T19:01:00',start_fold:'',end_fold:'',gaps:'skip'});
+  activeCamera={id:1,name:'Brama'};$('archive-view').hidden=false;exportSubmitting=false;let previewResolve,exportCalls=[];
+  api=(url)=>{exportCalls.push(url);return new Promise(resolve=>{previewResolve=resolve;});};
+  const submitted=$('export-form').listeners.submit({preventDefault(){},target:$('export-form')});
+  await $('export-form').listeners.submit({preventDefault(){},target:$('export-form')});
+  if(exportCalls.length!==1)throw new Error('duplicate export preview request');
+  activeCamera={id:2,name:'Parking'};exportViewGeneration++;exportSubmitting=false;
+  previewResolve({gaps:[],missing_seconds:0,output_seconds:60});await submitted;
+  if(exportCalls.some(url=>url.includes('export-jobs')))throw new Error('camera switch created an export for the wrong camera');
+  let protectedResolve;activeCamera={id:1,name:'Brama'};protectionSubmitting=false;
+  api=()=>new Promise(resolve=>{protectedResolve=resolve;});const protecting=$('protect-range').listeners.click();
+  activeCamera={id:2,name:'Parking'};exportViewGeneration++;protectionSubmitting=false;protectedResolve({files:1,protected:1});await protecting;
+  if($('notice').textContent.includes('Ochroną objęto'))throw new Error('old protection result appeared in another camera');
+  formData=previousFormData;refreshExports=previousRefreshExports;
+  // Slow export-list requests must still render even when a refresh is requested meanwhile.
+  const exportResolvers=[];let listCalls=0;api=()=>{listCalls++;return new Promise(resolve=>exportResolvers.push(resolve));};
+  const listRequest=refreshExports();await refreshExports();
+  if(listCalls!==1)throw new Error('export list started concurrent requests');
+  exportResolvers[0]({jobs:[{id:3,camera:'Brama',created:1795260000,status:'done',progress:1,download_ready:true}]});await listRequest;
+  if(!$('exports-list').children.some(row=>row.children&&row.children.some(child=>child.href==='/api/export-jobs/3/file')))throw new Error('slow export list never rendered');
+  if(listCalls!==2)throw new Error('queued export refresh was lost');exportResolvers[1]({jobs:[]});await Promise.resolve();
+  // A failed auxiliary request must not pretend that an authenticated user was logged out.
+  const originalRefreshCameras=refreshCameras;refreshCameras=async()=>{throw new Error('offline');};
+  $('camera-view').hidden=false;api=async url=>url==='/api/me'?{role:'viewer',timezone:'Europe/Warsaw'}:{};
+  await start();if(!$('login-panel').hidden||$('application').hidden||!$('notice').textContent.includes('offline'))throw new Error('camera failure hid an authenticated session');
+  let cameraRetries=0;refreshCameras=async()=>{cameraRetries++;};await $('refresh-cameras').listeners.click();
+  if(cameraRetries!==1||!$('notice').textContent.includes('odświeżona'))throw new Error('camera retry control did not refresh');
+  refreshCameras=originalRefreshCameras;
+  // Do not download the first indexed clip when no matching video frame is loaded.
+  let clickedFrame='';const previousCreate=document.createElement;
+  document.createElement=tag=>{const item=previousCreate(tag);item.click=()=>{clickedFrame=item.href;};return item;};
+  activeCamera={id:1,may_download:true};records=[previous];recordPosition=0;
+  $('archive-player').currentSrc='';$('archive-player').readyState=0;$('save-frame').listeners.click();
+  if(clickedFrame||!$('notice').textContent.includes('poczekaj'))throw new Error('frame downloaded without a loaded video');
+  const previousURL=globalThis.URL;
+  if(!previousURL)globalThis.URL=class {constructor(value,base){if(!value.startsWith(base+'/'))throw new Error('invalid url');this.origin=base;this.pathname=value.slice(base.length).split('?')[0];}};
+  $('archive-player').currentSrc='https://nvr.example/api/recordings/99/file';$('archive-player').readyState=4;$('save-frame').listeners.click();
+  if(clickedFrame)throw new Error('frame downloaded from a different recording');
+  $('archive-player').currentSrc='https://nvr.example/api/recordings/11/file';$('archive-player').currentTime=0.5;$('save-frame').listeners.click();
+  if(clickedFrame!=='/api/recordings/11/frame?offset=0.5&download=1')throw new Error('loaded frame could not be downloaded');
+  if(!previousURL)delete globalThis.URL;
+  document.createElement=previousCreate;
+  // A failed calendar request for an old month must not overwrite current feedback.
+  let rejectCalendar;activeCamera={id:1};$('archive-month').value='2026-11';$('notice').textContent='current notice';
+  api=()=>new Promise((resolve,reject)=>{rejectCalendar=reject;});const pendingCalendar=loadCalendar();$('archive-month').value='2026-12';rejectCalendar(new Error('old month'));await pendingCalendar;
+  if($('notice').textContent!=='current notice')throw new Error('stale calendar error reached another month');
+  // A pending per-file protection change must not reload another camera.
+  activeCamera={id:1,name:'Brama',may_download:true};$('archive-date').value='2026-11-21';loadedArchiveDate=null;
+  api=async url=>url.includes('/recordings?')?{recordings:[previous]}:{events:[]};await loadArchive();
+  playRecord(0);const protect=$('archive-protect');if(protect.textContent!=='Chroń nagranie'||$('archive-file-actions').hidden)throw new Error('current recording controls missing');
+  let finishProtection,callsAfter=0;api=()=>{callsAfter++;return new Promise(resolve=>{finishProtection=resolve;});};
+  const protectedRequest=protect.listeners.click();activeCamera={id:2,name:'Parking',may_download:true};finishProtection({ok:true});await protectedRequest;
+  if(callsAfter!==1)throw new Error('old protection operation reloaded another camera');
+  let defined=false,scheduled=null,delay=0,recreated=0;const scripts=[],originalCreate=document.createElement,originalRenderPlayer=renderCameras;
+  globalThis.customElements={get(name){return name==='video-stream'&&defined?function(){}:undefined;}};
+  document.createElement=tag=>{const item=originalCreate(tag);item.remove=()=>{item.removed=true;};return item;};
+  document.head={append(script){scripts.push(script);}};globalThis.setTimeout=(fn,ms)=>{scheduled=fn;delay=ms;return 7;};
+  renderCameras=()=>{recreated++;};$('camera-view').hidden=false;livePlayerAttempts=0;livePlayerRetry=null;livePlayerLoading=false;
+  ensureLivePlayer();ensureLivePlayer();if(scripts.length!==1)throw new Error('duplicate player load');
+  scripts[0].onerror();if(delay!==1000||!scheduled||!scripts[0].removed)throw new Error('player load did not schedule retry');
+  scheduled();if(scripts.length!==2||scripts[0].src===scripts[1].src)throw new Error('player retry did not use a fresh module URL');
+  const dependencyPath=src=>src.replace(/video-stream\\.js$/,'video-rtc.js');
+  if(dependencyPath(scripts[0].src)===dependencyPath(scripts[1].src))throw new Error('player dependency would remain cached after failure');
+  defined=true;scripts[1].onload();if(recreated!==1||livePlayerLoading||livePlayerRetry!==null)throw new Error('player did not recover after gateway start');
+  // If patched module loading fails twice, keep the old path available.
+  defined=false;scripts.length=0;livePlayerAttempts=0;livePlayerLoading=false;livePlayerRetry=null;
+  ensureLivePlayer();if(!scripts[0].src.startsWith('/assets/live-player/'))throw new Error('smooth module route not used');
+  scripts[0].onerror();scheduled();scripts[1].onerror();scheduled();
+  if(!scripts[2].src.startsWith('/live/player/'))throw new Error('native module fallback unavailable');
+  defined=true;scripts[2].onload();if(globalThis.sunhillMsePolicy!=='native')throw new Error('native fallback not reported');
+  globalThis.sunhillMsePolicy='smooth';
+  renderCameras=originalRenderPlayer;document.createElement=originalCreate;
+  const stats=liveDiagnostics({currentTime:10,buffered:{length:2,start:i=>[9,15][i],end:i=>[12,20][i]},getVideoPlaybackQuality:()=>({totalVideoFrames:130,droppedVideoFrames:5})},{now:1000,frames:100},2000);
+  if(stats.ahead!==2||stats.gap!==10||stats.fps!==25||stats.dropped!==5)throw new Error('live playback statistics incorrect');
+  const noStats=liveDiagnostics({currentTime:10},null,2000);if(noStats.fps!==null||noStats.ahead!==null||noStats.dropped!==null)throw new Error('unknown diagnostics invented values');
+  // Live quality changes must not reconnect an unchanged alias; manual
+  // selection survives a refresh and the loss of a configured substream.
+  cameras=[{id:1,slug:'cam',name:'Camera',enabled:true,sub_configured:true}];layouts=[];$('layout-select').value='';
+  renderCameras();let cardLive=$('cameras').children[0],playerLive=cardLive.children[1],actionsLive=cardLive.children[2],qualityLive=actionsLive.children[0];
+  if(!actionsLive.hidden)throw new Error('camera options visible by default');
+  if(!String(playerLive.src).endsWith('src=cam_sub'))throw new Error('auto grid did not choose substream');
+  if(playerLive.media!=='video,audio')throw new Error('live player did not request audio');
+  let disconnects=0;playerLive.ondisconnect=()=>{disconnects++;};qualityLive.value='sub';qualityLive.listeners.change();
+  if(disconnects!==0)throw new Error('unchanged alias restarted player');
+  if(qualityLive.children.map(x=>x.value).join(',')!=='sub,main')throw new Error('unexpected quality profiles');
+  qualityLive.value='main';qualityLive.listeners.change();
+  if(disconnects!==1||!String(playerLive.replacement.src).endsWith('src=cam')||!document.cookie.includes('=main'))throw new Error('main stream/cookie selection failed');
+  livePreferences.clear();
+  renderCameras();cardLive=$('cameras').children[0];playerLive=cardLive.children[1];actionsLive=cardLive.children[2];qualityLive=actionsLive.children[0];
+  if(qualityLive.value!=='main'||!String(playerLive.src).endsWith('src=cam'))throw new Error('refresh lost manual stream selection');
+  const compatibilityButton=actionsLive.children.at(-1).children.at(-1);compatibilityButton.listeners.click();
+  if(!String(playerLive.replacement.src).endsWith('src=~cam'))throw new Error('diagnostic compatibility mode failed');
+  renderCameras();cardLive=$('cameras').children[0];playerLive=cardLive.children[1];actionsLive=cardLive.children[2];qualityLive=actionsLive.children[0];
+  let audioPlayed=false;playerLive.video={muted:false,play(){audioPlayed=true;return Promise.resolve();}};
+  playerLive.listeners.loadedmetadata({type:'loadedmetadata',target:playerLive.video});if(!playerLive.video.muted||playerLive.video.controls!==false)throw new Error('live playback did not start muted without controls');
+  await actionsLive.children[1].listeners.click();if(playerLive.video.muted||!audioPlayed)throw new Error('explicit audio activation failed');
+  await actionsLive.children[1].listeners.click();if(!playerLive.video.muted)throw new Error('audio toggle failed');
+  if(actionsLive.children[1].textContent!=='Włącz dźwięk')throw new Error('muted label incorrect');
+  let rejectOld;playerLive.video.play=()=>new Promise((resolve,reject)=>{rejectOld=reject;});
+  const oldAudio=actionsLive.children[1].listeners.click();await actionsLive.children[1].listeners.click();
+  playerLive.video.play=()=>Promise.resolve();await actionsLive.children[1].listeners.click();rejectOld(new Error('old play request'));await oldAudio;
+  if(playerLive.video.muted||actionsLive.children[1].textContent!=='Wycisz')throw new Error('stale audio rejection overwrote current choice');
+  playerLive.video.volume=0;playerLive.listeners.volumechange({target:playerLive.video});
+  if(actionsLive.children[1].textContent!=='Włącz dźwięk')throw new Error('native mute/volume change did not update audio control');
+  await actionsLive.children[1].listeners.click();if(playerLive.video.muted||playerLive.video.volume!==1)throw new Error('zero-volume native control could not be unmuted');
+  const promptLive=cardLive.children[3],promptText=promptLive.children[0],promptRetry=promptLive.children[1].children[0],promptDismiss=promptLive.children[1].children[1];
+  await actionsLive.children[1].listeners.click();
+  let mutedRecovery=0;playerLive.video.paused=true;playerLive.video.play=function(){if(this.muted){mutedRecovery++;this.paused=false;return Promise.resolve();}return Promise.reject(Object.assign(new Error('autoplay'),{name:'NotAllowedError'}));};
+  await actionsLive.children[1].listeners.click();
+  if(promptLive.hidden||!promptText.textContent.includes('Przeglądarka zablokowała')||!playerLive.video.muted||mutedRecovery!==1)throw new Error('blocked audio did not offer local muted recovery');
+  playerLive.video.play=()=>Promise.resolve();await promptRetry.listeners.click();
+  if(!promptLive.hidden||playerLive.video.muted)throw new Error('local audio retry did not enable audio');
+  await actionsLive.children[1].listeners.click();playerLive.video.play=()=>Promise.reject(new Error('decode'));
+  await actionsLive.children[1].listeners.click();if(promptLive.hidden||promptText.textContent.includes('Przeglądarka zablokowała'))throw new Error('generic media failure mislabeled as autoplay');
+  await promptDismiss.listeners.click();if(!promptLive.hidden||!playerLive.video.muted)throw new Error('dismiss did not preserve muted video');
+  playerLive.video.play=()=>Promise.reject(Object.assign(new Error('autoplay'),{name:'NotAllowedError'}));await actionsLive.children[1].listeners.click();
+  if(promptLive.hidden)throw new Error('audio prompt did not reopen');
+  playerLive.video.paused=true;let resumedMuted=false;playerLive.video.play=function(){resumedMuted=this.muted;this.paused=false;return Promise.resolve();};await promptDismiss.listeners.click();if(!resumedMuted||!promptLive.hidden)throw new Error('dismiss did not resume video in user gesture');
+  playerLive.video.play=()=>Promise.reject(Object.assign(new Error('autoplay'),{name:'NotAllowedError'}));await actionsLive.children[1].listeners.click();
+  actionsLive.children[2].listeners.click();if(!playerLive.replacement||!promptLive.hidden||actionsLive.children[1].textContent!=='Włącz dźwięk')throw new Error('manual reconnect did not replace player and reset audio');
+  qualityLive.value='sub';qualityLive.listeners.change();cameras[0].sub_configured=false;renderCameras();
+  if($('cameras').children[0].children[2].children[0].value!=='main'||!String($('cameras').children[0].children[1].src).endsWith('src=cam'))throw new Error('removed substream left stale selection');
+  const beforeHidden=$('cameras').children[0].children[1];let hiddenDisconnect=0;beforeHidden.ondisconnect=()=>hiddenDisconnect++;
+  $('cameras').querySelectorAll=selector=>selector==='video-stream'&&$('cameras').children.length?[beforeHidden]:[];
+  view('admin');if(hiddenDisconnect!==1||$('cameras').children.length)throw new Error('hidden live view retained a player');
+  renderCameras();if($('cameras').children.length)throw new Error('hidden refresh recreated a live stream');
+  $('cameras').querySelectorAll=()=>[];view('cameras');if(!$('cameras').children.length)throw new Error('return to cameras did not restore players');
+  cameras=[];renderCameras();if(livePreferences.size)throw new Error('removed camera kept live preferences');
+  // CSS order and sizing preserve the live custom elements and their stream state.
+  cameras=[1,2,3].map(id=>({id,slug:'camera-'+id,name:'Camera '+id,enabled:true,sub_configured:true}));layouts=[];
+  const workspace=$('cameras');workspace.clientWidth=1200;
+  workspace.querySelectorAll=selector=>selector==='.camera'?workspace.children.filter(item=>item.dataset.cameraId):[];
+  renderCameras();const tiles=workspace.children.slice(),oldPlayers=tiles.map(tile=>tile.children[1]);let layoutDisconnects=0;
+  for(const player of oldPlayers)player.ondisconnect=()=>layoutDisconnects++;
+  for(const tile of tiles){
+    const props=new Map(),classes=new Set();
+    tile.style.setProperty=(k,v)=>props.set(k,v);tile.style.removeProperty=k=>props.delete(k);tile.style.getPropertyValue=k=>props.get(k);
+    tile.classList.contains=k=>classes.has(k);tile.classList.add=(...keys)=>keys.forEach(k=>classes.add(k));tile.classList.remove=(...keys)=>keys.forEach(k=>classes.delete(k));
+    tile.getBoundingClientRect=()=>({width:393,height:400});tile.querySelector=()=>({getBoundingClientRect:()=>({height:220})});tile.parentElement=workspace;
+    for(const handle of tile.children[4].children){let captured=null;handle.setPointerCapture=id=>{captured=id;};handle.hasPointerCapture=id=>captured===id;handle.releasePointerCapture=()=>{captured=null;};handle.removeEventListener=(name,fn)=>{if(handle.listeners[name]===fn)delete handle.listeners[name];};}
+  }
+  const event=(x,y,extra={})=>({pointerId:1,button:0,isPrimary:true,clientX:x,clientY:y,preventDefault(){},...extra});
+  $('edit-live-layout').listeners.click();if(!liveLayoutEditing||$('live-layout-help').hidden)throw new Error('edit mode did not open');
+  const moveHandle=tiles[0].children[4].children[0],resizeHandle=tiles[0].children[4].children[1];
+  document.elementFromPoint=()=>({closest:()=>tiles[2]});
+  moveHandle.listeners.pointerdown(event(100,100));moveHandle.listeners.pointermove(event(800,100));
+  if(!tiles[2].classList.contains('live-drop-target'))throw new Error('drag target not marked');
+  moveHandle.listeners.pointerup(event(800,100));
+  if(liveLayoutOrder.join(',')!=='2,3,1'||tiles[0].style.order!=='2'||tiles[2].classList.contains('live-drop-target'))throw new Error('drag did not reorder');
+  resizeHandle.listeners.pointerdown(event(100,100));resizeHandle.listeners.pointermove(event(300,180));resizeHandle.listeners.pointerup(event(300,180));
+  if(liveLayoutSizes.get('1').span!==6||liveLayoutSizes.get('1').height!==300||tiles[0].style.getPropertyValue('--live-height')!=='300px')throw new Error('resize did not set width and height');
+  resizeHandle.listeners.pointerdown(event(100,100));resizeHandle.listeners.pointermove(event(400,400));resizeHandle.listeners.pointercancel(event(400,400));
+  if(liveLayoutSizes.get('1').span!==6||liveLayoutSizes.get('1').height!==300)throw new Error('cancelled resize did not roll back');
+  moveHandle.listeners.keydown({key:'ArrowLeft',preventDefault(){}});if(liveLayoutOrder.join(',')!=='2,1,3')throw new Error('keyboard reorder failed');
+  resizeHandle.listeners.keydown({key:'ArrowUp',preventDefault(){}});if(liveLayoutSizes.get('1').height!==260)throw new Error('keyboard resize failed');
+  workspace.clientWidth=390;applyLiveLayout();if(tiles[0].style.getPropertyValue('--live-span')!=='12'||liveLayoutSizes.get('1').span!==6)throw new Error('mobile clamp lost desktop size');
+  workspace.clientWidth=1200;applyLiveLayout();if(tiles[0].style.getPropertyValue('--live-span')!=='6')throw new Error('desktop size not restored');
+  $('edit-live-layout').listeners.click();if(liveLayoutEditing||!$('live-layout-help').hidden||liveLayoutSizes.size!==1)throw new Error('end edit lost temporary layout');
+  if(layoutDisconnects||tiles.some((tile,i)=>workspace.children[i]!==tile||tile.children[1]!==oldPlayers[i]))throw new Error('layout manipulation reconnected live player');
+  $('reset-live-layout').listeners.click();if(liveLayoutSizes.size||liveLayoutOrder.join(',')!=='1,2,3')throw new Error('reset layout failed');
+  // Reconcile a changed inventory without retaining inaccessible camera state.
+  liveLayoutSizes.set('3',{span:6,height:300});liveLayoutOrder=['3','1','2'];cameras=cameras.slice(0,2);reconcileLiveLayout();
+  if(liveLayoutSizes.size||liveLayoutOrder.join(',')!=='1,2')throw new Error('removed camera retained a layout');
+  workspace.querySelectorAll=()=>[];
+  // Account tools live in a separate view and must not leave a live player running.
+  cameraListState='ready';cameras=[{id:1,slug:'cam',name:'Brama',enabled:true}];layouts=[];
+  view('cameras');renderCameras();view('settings');
+  if($('settings-view').hidden||!$('camera-view').hidden||$('cameras').children.length)throw new Error('settings did not isolate the monitoring workspace');
+  view('cameras');if(!$('settings-view').hidden||$('cameras').children.length!==1)throw new Error('camera workspace not restored');
+  api=async url=>{if(url==='/api/cameras')return {cameras:[{id:2,slug:'parking',name:'Parking',enabled:true}]};throw new Error('layouts offline');};
+  try{await refreshCameras();}catch(error){if(error.message!=='layouts offline')throw error;}
+  if($('cameras').children[0].dataset.cameraId!=='2')throw new Error('layout error hid authorised cameras');
+  api=async()=>({layouts:[{id:7,name:'Parking',cameras:[2]}]});await refreshLayouts();
+  $('manage-layout-select').value='7';$('manage-layout-select').listeners.change();if($('delete-layout').disabled)throw new Error('layout management did not enable deletion');
+  $('manage-layout-select').value='';$('manage-layout-select').listeners.change();if(!$('delete-layout').disabled)throw new Error('layout deletion enabled without selection');
+  // Inventory refresh is bounded and discards stale responses. An optional
+  // status endpoint failing must not prevent camera/user controls from rendering.
+  const originals=[refreshDomain,refreshTLS,refreshRotation,refreshServices,refreshUpgradeStatus];
+  refreshDomain=async()=>{throw new Error('domain offline');};refreshTLS=refreshRotation=refreshServices=async()=>{};
+  refreshUpgradeStatus=async()=>({pending:false,status:{state:'idle'}});
+  $('ha-form').elements={url:node(),enabled:node()};$('monitoring-form').elements={stale_after:node()};$('storage-form').elements={minimum:node(),buffer:node()};$('archive-form').elements={archive:node(),exports:node(),staging:node()};
+  let firstInventory;let inventoryCalls=0,adminCalls=[];
+  api=async url=>{adminCalls.push(url);if(url==='/api/admin/inventory'){
+    if(++inventoryCalls===1)return new Promise(resolve=>{firstInventory=resolve;});
+    return {users:[{id:1,username:'new-admin',role:'admin',enabled:true,permissions:[]}],accounts:[],cameras:[]};}
+    if(url==='/api/settings/home-assistant')return {url:'',enabled:false};
+    if(url==='/api/settings/recording')return {segment_seconds:300};
+    if(url==='/api/settings/storage')return {archive:'/fixture',exports:'/exports',change_status:{message:''},minimum_free:1e10,free_buffer:5e9};
+    if(url==='/api/settings/monitoring')return {stale_after:900};
+    if(url==='/api/audit')return {events:[]};throw new Error('unexpected admin endpoint '+url);};
+  const staleInventory=refreshAdmin();await refreshAdmin();
+  firstInventory({users:[],accounts:[],cameras:[]});await staleInventory;
+  if($('users').children[0].children[0].textContent!=='new-admin - admin'||adminCalls.length!==7)throw new Error('stale admin refresh or unbounded inventory requests');
+  if(!$('notice').textContent.includes('domain offline'))throw new Error('optional admin failure was not visible');
+  const savedMe=me;me={role:'admin'};
+  const statsCard=node(),statsPanel=node();statsCard.dataset.cameraId='1';statsCard.querySelector=()=>statsPanel;
+  $('manage-cameras').querySelectorAll=()=>[statsCard];
+  api=async()=>({cameras:{'1':{main:{width:2560,height:1440,fps:30,codec:'h264',video_bitrate:3145000},sub:null,sub_configured:true,bytes_24h:34000000000,files_24h:288,full_day:true,files:300,bytes:36000000000,health:'recording',gaps:0,gap_seconds:0,covered_seconds:86400}},disk:{free_bytes:1000000000000,active_bytes_24h:34000000000,forecast_ready:true,retention_days:30,days_until_reserve:28}});
+  await refreshCameraStatistics(adminRefreshGeneration);
+  if(!statsPanel.children[0].children[1].textContent.includes('2560 × 1440 · 30 FPS · H264 · 3.15 Mb/s')||$('overview-retention').textContent!=='30.0 dni')throw new Error('camera statistics failed to render');
+  $('manage-cameras').querySelectorAll=()=>[];me=savedMe;
+  const freshStorage={archive:'/new',exports:'/exports',staging:'/stage',change_pending:false,change_status:{state:'done',request_id:'new-id',message:'Zapisano'}};
+  storageDirty=true;$('archive-form').elements.archive.value='/draft';renderStorage(freshStorage);
+  if($('archive-form').elements.archive.value!=='/draft')throw new Error('storage draft overwritten');
+  storageRequest='new-id';renderStorage({...freshStorage,change_pending:true,change_status:{state:'failed',request_id:'old-id',message:'Stary błąd'}});
+  if(!storageRequest||$('storage-change-status').textContent.includes('Stary błąd'))throw new Error('stale storage result accepted');
+  renderStorage(freshStorage);
+  if(storageRequest||storageDirty||$('archive-form').elements.archive.value!=='/new'||$('archive-form').elements.staging.value!=='/stage')throw new Error('storage success not reconciled');
+  storageRequest='failed-id';storageDirty=true;$('archive-form').elements.archive.value='/retry';renderStorage({...freshStorage,change_status:{state:'failed',request_id:'failed-id',message:'Niepowodzenie'}});
+  if(storageRequest||!storageDirty||$('archive-form').elements.archive.value!=='/retry')throw new Error('storage failure draft lost');
+  storageDirty=false;storageLocalMessage=null;
+  renderStorage(freshStorage);let submittedStorage;
+  if(!globalThis.crypto)globalThis.crypto={getRandomValues(a){a.fill(3);return a;}};
+  $('archive-form').elements.archive.value='/other';
+  api=async(url,method,data)=>{submittedStorage=data;return {ok:true};};
+  await $('archive-form').listeners.submit({preventDefault(){},target:$('archive-form')});
+  if(!submittedStorage||submittedStorage.staging!=='/stage')throw new Error('explicit staging lost on archive change');
+  storageRequest=null;storageDirty=false;storageLocalMessage=null;
+  [refreshDomain,refreshTLS,refreshRotation,refreshServices,refreshUpgradeStatus]=originals;
+  const oldFormData=formData,oldRefreshAdmin=refreshAdmin,oldRefreshCameras=refreshCameras;let refreshedAdmin=0,refreshedCameras=0,createdCamera=false;
+  formData=()=>({ip:'192.168.0.100'});refreshAdmin=async()=>{refreshedAdmin++;};refreshCameras=async()=>{refreshedCameras++;};
+  api=async(url,method,data)=>{if(url==='/api/cameras'&&method==='POST'&&data.ip==='192.168.0.100')createdCamera=true;return {sub_configured:true};};
+  await $('camera-form').listeners.submit({preventDefault(){},target:{reset(){}}});
+  if(!createdCamera||refreshedAdmin!==1||refreshedCameras!==1)throw new Error('camera creation did not update administrative inventory and live view');
+  formData=oldFormData;refreshAdmin=oldRefreshAdmin;refreshCameras=oldRefreshCameras;
+
+  let reloads=0;location.reload=()=>{reloads++;};
+  me={id:8,role:'viewer',username:'viewer',timezone:'Europe/Warsaw'};cameras=[{id:1,may_download:true}];
+  $('archive-view').hidden=false;$('sync-view').hidden=true;
+  api=async url=>url==='/api/me'?{...me}:{cameras:[{id:1,may_download:true}]};
+  if(!await refreshUserContext()||reloads)throw new Error('unchanged account or access unexpectedly reloaded');
+  api=async url=>url==='/api/me'?{...me}:{cameras:[{id:1,may_download:false}]};
+  if(await refreshUserContext()||reloads!==1)throw new Error('revoked download access did not reset archive view');
+  api=async()=>{const error=new Error('session expired');error.status=401;throw error;};
+  if(await refreshUserContext()||reloads!==2)throw new Error('expired session did not reset panel');
+  api=async()=>({...me,role:'admin'});
+  if(await refreshUserContext()||reloads!==3)throw new Error('changed role did not reset panel');
+  // 0.3.2: opening the day starts media without waiting for optional events.
+  me={timezone:'Europe/Warsaw'};activeCamera={id:1,name:'Brama',may_download:true};resetArchiveContents();loadedArchiveDate=null;
+  const today=cameraDay(), sampleStart=Date.parse(today+'T12:00:00Z');
+  const a={id:201,local_time:today+'T13:00:00',utc_first:new Date(sampleStart).toISOString(),utc_second:null,duration:300,protected:false};
+  const b={...a,id:202,local_time:today+'T13:05:00',utc_first:new Date(sampleStart+300000).toISOString()};
+  const c={...a,id:203,local_time:today+'T13:15:00',utc_first:new Date(sampleStart+900000).toISOString()};
+  $('archive-date').value=today;let eventsResolve;api=async url=>url.includes('/recordings?')?{recordings:[a,b,c]}:new Promise(resolve=>{eventsResolve=resolve;});
+  if(!await loadArchive(true)||!$('archive-player').src.endsWith('/203/file'))throw new Error('latest recording did not start before events finished');
+  if(!eventsResolve||$('timeline-track').children.filter(item=>item.className==='timeline-segment').length!==2)throw new Error('full day coverage or gap missing');
+  if(!$('archive-player').muted||$('archive-file-actions').hidden||$('archive-download').href!=='/api/recordings/203/file?download=1')throw new Error('archive autoplay/current-file actions failed');
+  eventsResolve({events:[]});await Promise.resolve();await Promise.resolve();
+  const historical='2026-11-21';$('archive-date').value=historical;const a2={...a,local_time:historical+'T13:00:00',utc_first:historical+'T12:00:00Z'},b2={...b,local_time:historical+'T13:05:00',utc_first:historical+'T12:05:00Z'};
+  api=async url=>url.includes('/recordings?')?{recordings:[a2,b2]}:Promise.reject(new Error('optional events failed'));
+  if(!await loadArchive(true)||!$('archive-player').src.endsWith('/201/file'))throw new Error('historical day did not start at first recording');
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  if(records.length!==2||$('timeline-track').children.filter(item=>item.className==='timeline-segment').length!==1)throw new Error('event failure affected recording coverage');
+  api=async(url,method,data)=>({utc:historical+'T12:05:20Z'});$('timeline-position').value='47120';await $('timeline-position').listeners.change({target:$('timeline-position')});
+  if(!$('archive-player').src.endsWith('/202/file'))throw new Error('day scrubber did not select another segment');
+  renderIndexState({state:'running',scanned:64,accepted:63,unchanged:20,skipped:1,failed:0,started:Math.floor(Date.now()/1000)-5});
+  if($('archive-index-progress').hidden||!$('archive-index-counts').textContent.includes('64')||$('archive-index-pause').disabled)throw new Error('index status not rendered');
+  $('archive-index-camera').value='cam';$('archive-index-start').value='2026-11-13';$('archive-index-end').value='2026-11-14';let indexPayload;
+  api=async (url,method,data)=>{if(url==='/api/settings/index'&&method==='POST')indexPayload=data;return {state:data?.action==='pause'?'paused':'queued'};};
+  await $('archive-index-run').listeners.click();if(indexPayload.camera!=='cam'||indexPayload.start!=='2026-11-13'||indexPayload.end!=='2026-11-14')throw new Error('index request lost scope');
+  await $('archive-index-pause').listeners.click();if(indexPayload.action!=='pause'||!$('archive-index-progress').hidden)throw new Error('index pause failed');
+  print('archive smoke test passed');
+})().catch(error=>{print(String(error));quit(1);});
+`);

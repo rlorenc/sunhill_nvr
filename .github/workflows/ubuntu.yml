@@ -1,0 +1,94 @@
+name: Ubuntu 26.04 verification
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install integration tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg openssl nginx proftpd-core apparmor apparmor-utils
+          sudo useradd --user-group --no-create-home --shell /usr/sbin/nologin sunhill
+          sudo apparmor_parser -r -T /etc/apparmor.d/proftpd
+          sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
+      - name: Check shell and browser script syntax
+        run: |
+          bash -n install.sh
+          node --check src/sunhill_nvr/static/app.js
+          node tests/browser_smoke.js
+      - name: Run Python and Ubuntu configuration tests (including root-owned fixtures)
+        run: sudo env SUNHILL_UBUNTU_INTEGRATION=1 PYTHONPATH="$PWD/src" /usr/bin/python3 -m unittest discover -s tests -v
+      - name: Verify installer directory permissions with real service account
+        run: sudo env PYTHONPATH="$PWD/src" python3 -m unittest discover -s tests -p test_install_helpers.py -v
+      - name: Verify recovery migration in disposable runner
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: sudo env PYTHONPATH="$PWD/src" python3 -m unittest discover -s tests -p 'test_recovery*.py' -v
+  install-smoke:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Prepare real Chrome integration tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv libnss3-tools
+          command -v google-chrome
+          python3 -m venv "$RUNNER_TEMP/sunhill-browser"
+          "$RUNNER_TEMP/sunhill-browser/bin/pip" install playwright==1.57.0
+          echo "SUNHILL_BROWSER_PYTHON=$RUNNER_TEMP/sunhill-browser/bin/python" >> "$GITHUB_ENV"
+      - name: Install the exact candidate archive on an isolated VM and test FTP, browser audio and updates
+        run: |
+          git checkout -B main "$GITHUB_SHA"
+          version=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')
+          python3 scripts/package_release.py --candidate "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz"
+          tar -xzf "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/sunhill-nvr-$version"
+          bash tests/ubuntu_install_smoke.sh
+  default-install:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [clean, resume]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Verify actual default installation or interrupted 0.2.8 recovery
+        run: |
+          git checkout -B main "$GITHUB_SHA"
+          version=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')
+          python3 scripts/package_release.py --candidate "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz"
+          tar -xzf "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/sunhill-nvr-$version"
+          bash tests/ubuntu_default_resume_smoke.sh "${{ matrix.mode }}"
+  package-verified:
+    needs: [verify, install-smoke, default-install]
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && success() }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Package only the tested commit
+        run: |
+          git checkout -B main "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          version=$(PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')
+          python3 scripts/package_release.py "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-sunhill-nvr
+          path: ${{ runner.temp }}/sunhill-nvr-*.tar.gz
+          if-no-files-found: error
