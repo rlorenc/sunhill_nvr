@@ -16,6 +16,8 @@ let archiveScrubbing = false;
 let calendarGeneration = 0;
 let archiveAutoRecovery=null;
 let archiveErrorGeneration=-1;
+const archiveCompatCameras=new Set();
+let archivePlaybackIntent=null;
 let exportListGeneration = 0;
 let exportListPending = false;
 let exportListRefreshAgain = false;
@@ -703,7 +705,7 @@ async function loadArchive(autoStart=false) {
 // two neighbouring segments are prefetched, only near their boundaries.
 const archiveBuffers=new Map();
 let archiveSwitch=null;
-function archiveSource(id){return `/api/recordings/${id}/file`;}
+function archiveSource(id){return `/api/recordings/${id}/file`+(archiveCompatCameras.has(activeCamera?.id)?'?compat=hvc1':'');}
 function disposeArchiveBuffer(id){
   const item=archiveBuffers.get(id);if(!item)return;
   archiveBuffers.delete(id);item.video.pause();item.video.removeAttribute('src');item.video.load();item.video.remove();
@@ -745,19 +747,32 @@ async function diagnoseArchiveFailure(record,error,generation){
   const current=()=>generation===playbackGeneration&&camera===activeCamera&&date===$('archive-date').value;
   const base=archiveMediaMessage(error),label='Nagranie #'+record.id+' ('+record.local_time?.replace('T',' ')+')';
   $('archive-status').textContent=base+' Sprawdzanie pliku…';
-  let detail='';
+  let detail='',needsCompatibility=false;
+  const intent=archivePlaybackIntent;
+  const compatible=archiveCompatCameras.has(camera?.id);
   try{
     const head=await fetch(archiveSource(record.id),{method:'HEAD',credentials:'same-origin',cache:'no-store'});
     if(!head.ok)detail='HTTP '+head.status+' - serwer nie udostępnił pliku.';
     else if(!head.headers.get('Content-Type')?.includes('video/mp4'))detail='Serwer nie zwrócił MP4.';
     else{
       const info=await api(`/api/recordings/${record.id}/media-info`);
+      needsCompatibility=info.streams.some(item=>item.type==='video'&&item.codec==='hevc'&&item.tag!=='hvc1');
       detail=info.streams.map(item=>`${item.type}: ${item.codec}${item.tag?' ('+item.tag+')':''}`).join(', ');
       if(detail)detail='HTTP '+head.status+'; '+detail+'.';
     }
   }catch(e){detail='Diagnostyka pliku: '+e.message;}
   if(!current())return;
-  const message=label+': '+base+(detail?' '+detail:'');
+  if(!compatible&&needsCompatibility&&camera&&(error?.code===3||error?.code===4||error?.name==='NotSupportedError')){
+    const index=records.findIndex(item=>item.id===record.id);
+    if(index>=0){
+      archiveCompatCameras.add(camera.id);clearArchiveBuffers();
+      const offset=intent?.generation===generation?intent.offset:0;
+      playRecord(index,offset,intent?.automatic||false,intent?.keepPaused||false);
+      setArchiveNote('Przygotowywanie zgodnego nagrania HEVC (hvc1), bez rekompresji.');
+      return;
+    }
+  }
+  const message=label+': '+base+(detail?' '+detail:'')+(compatible?' Próba zgodności hvc1 nie powiodła się.':'');
   const recovery=archiveAutoRecovery;
   if(recovery&&recovery.camera===camera&&recovery.date===date&&recovery.remaining>0){
     const index=records.findIndex(item=>item.id===record.id);let previous=index-1;
@@ -771,6 +786,7 @@ function playRecord(index,offset=0,automatic=false,keepPaused=false) {
   if(!automatic){archiveAutoRecovery=null;setArchiveNote('');}
   if(archiveSwitch){archiveSwitch.cancel();archiveSwitch=null;}
   const player=$('archive-player'),generation=++playbackGeneration,source=archiveSource(record.id);
+  archivePlaybackIntent={generation,offset,automatic,keepPaused};
   if(record.utc_first&&!record.utc_second){const instant=Date.parse(record.utc_first)/1000+offset;if(cameraDay(instant*1000)===$('archive-date').value){const position=eventSeconds(instant);$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);}}
   const commit=(target)=>{
     if(generation!==playbackGeneration)return;
@@ -812,7 +828,7 @@ function playRecord(index,offset=0,automatic=false,keepPaused=false) {
   };
   archiveSwitch={cancel,target:Date.parse(record.utc_first)/1000+offset,paused:keepPaused};updateArchiveControls();
   for(const event of ['loadeddata','canplay','seeked'])target.addEventListener(event,ready);target.addEventListener('error',fail);
-  timer=setTimeout(fail,15000);if(target.error)fail();else ready();
+  timer=setTimeout(fail,source.includes('?compat=hvc1')?50000:15000);if(target.error)fail();else ready();
 }
 $('archive-calendar-panel').addEventListener('toggle',()=>{if($('archive-calendar-panel').open&&activeCamera){$('archive-month').value=$('archive-date').value.slice(0,7);loadCalendar();}});
 $('archive-play').addEventListener('click',()=>{const player=$('archive-player'),record=records.find(item=>item.id===archiveRecordId);if(!record)return;archiveAutoRecovery=null;if(player.error||player.readyState===0){playRecord(records.indexOf(record),Number.isFinite(player.currentTime)?player.currentTime:0);return;}if(player.paused!==false){const generation=playbackGeneration;player.play().catch(error=>{if(generation!==playbackGeneration)return;if(error.name==='NotAllowedError')$('archive-status').textContent=archiveMediaMessage(error);else if(error.name!=='AbortError')void diagnoseArchiveFailure(record,player.error||error,generation);});}else player.pause();});
@@ -827,7 +843,7 @@ function bindArchiveMedia(video){
   video.addEventListener('click',()=>{if(active()&&archiveRecordId!==null)$('archive-play').click();});
   video.addEventListener('keydown',event=>{if(active()&&(event.key===' '||event.key==='Enter')){event.preventDefault();if(archiveRecordId!==null)$('archive-play').click();}});
   for(const event of ['play','pause','volumechange'])video.addEventListener(event,()=>{if(active())updateArchiveControls();});
-  video.addEventListener('playing',()=>{if(active()&&!archiveSwitch){archiveAutoRecovery=null;$('archive-status').textContent='';updateArchiveControls();warmArchiveNeighbours();}});
+  video.addEventListener('playing',()=>{if(active()&&!archiveSwitch){archiveAutoRecovery=null;if($('archive-playback-note').textContent.startsWith('Przygotowywanie zgodnego nagrania HEVC'))setArchiveNote('');$('archive-status').textContent='';updateArchiveControls();warmArchiveNeighbours();}});
   video.addEventListener('waiting',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null)$('archive-status').textContent='Buforowanie obrazu…';});
   video.addEventListener('error',()=>{if(active()&&!archiveSwitch&&archiveRecordId!==null){const record=records.find(item=>item.id===archiveRecordId);if(record)void diagnoseArchiveFailure(record,video.error,playbackGeneration);}});
   video.addEventListener('ended',()=>{if(active()&&!archiveSwitch)playNextRecording().catch(error=>notify(error.message,'error'));});

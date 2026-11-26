@@ -68,9 +68,9 @@ def open_confined(root: Path, relative: str, *, expected_size: int | None = None
         for fd in reversed(fds):os.close(fd)
 
 class FileBody:
-    def __init__(self,fd: int,part: ByteRange, *, authorize=None, interval: float=5.0, monotonic=None, head: bool=False):
+    def __init__(self,fd: int,part: ByteRange, *, authorize=None, interval: float=5.0, monotonic=None, head: bool=False, held_fd: int | None=None):
         import time
-        self.fd=fd;self.remaining=part.length;os.lseek(fd,part.start,os.SEEK_SET)
+        self.fd=fd;self.held_fd=held_fd;self.remaining=part.length;os.lseek(fd,part.start,os.SEEK_SET)
         self.authorize=authorize;self.interval=interval;self.monotonic=monotonic or time.monotonic;self.head=head
     def __iter__(self):
         try:
@@ -92,6 +92,8 @@ class FileBody:
     def close(self):
         if self.fd is not None:
             os.close(self.fd);self.fd=None
+        if self.held_fd is not None:
+            os.close(self.held_fd);self.held_fd=None
 
 
 def acquire_shared(fd: int) -> None:

@@ -587,6 +587,27 @@ class WebTests(unittest.TestCase):
     clock[0]=6
     with self.assertRaises(StopIteration):next(chunks)
     self.assertIsNone(stream.fd);db.close()
+ def test_archive_hvc1_range_and_original_download_permissions(self):
+    import subprocess
+    from sunhill_nvr.media import probe
+    cookie,csrf=self.login();_,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x'},cookie,csrf);cid=json.loads(body)['id']
+    file=self.root/'cam/2026/11/21/190900.mp4';file.parent.mkdir(parents=True)
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=blue:s=160x96:r=10:d=1','-c:v','libx265','-x265-params','pools=1:frame-threads=1:log-level=error','-tag:v','hev1','-movflags','+frag_keyframe+empty_moov+default_base_moof',str(file)],check=True,stderr=subprocess.PIPE)
+    original=file.read_bytes();db=database.open_db(self.file);archive.refresh(db,self.root,'Europe/Warsaw',inspect_duration=lambda p:1,is_open=lambda p:False,mount_check=lambda:True,min_age_seconds=0)
+    rid=db.execute('SELECT id FROM recordings').fetchone()[0];uid=security.create_user(db,'viewer','viewer-test-password','viewer');session=security.authenticate(db,'viewer','viewer-test-password','fixture');db.close()
+    url=f'/api/recordings/{rid}/file';viewer='sunhill_session='+session.token;q={'QUERY_STRING':'compat=hvc1'}
+    self.assertEqual(self.call(url,cookie=viewer,extra=q)[0]['status'],'403 Forbidden')
+    self.assertFalse((self.file.parent/'.archive-hvc1-cache').exists())
+    db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES (?,?,0)',(uid,cid));db.commit();db.close()
+    r,body=self.call(url,cookie=viewer,extra=q);self.assertEqual(r['status'],'200 OK');self.assertNotEqual(body,original)
+    cache=next((self.file.parent/'.archive-hvc1-cache').glob('*.mp4'));self.assertEqual(probe(cache)['streams'][0]['codec_tag_string'],'hvc1')
+    r,part=self.call(url,cookie=viewer,extra={**q,'HTTP_RANGE':'bytes=10-99'});self.assertEqual(r['status'],'206 Partial Content');self.assertEqual(part,body[10:100]);self.assertEqual(dict(r['headers'])['Content-Range'],f'bytes 10-99/{len(body)}')
+    r,empty=self.call(url,'HEAD',cookie=viewer,extra=q);self.assertEqual(r['status'],'200 OK');self.assertEqual(empty,b'');self.assertEqual(dict(r['headers'])['Content-Length'],str(len(body)))
+    self.assertEqual(self.call(url,cookie=viewer,extra={'QUERY_STRING':'download=1'})[0]['status'],'403 Forbidden')
+    self.assertEqual(self.call(url,cookie=cookie,extra={'QUERY_STRING':'download=1'})[1],original)
+    self.assertEqual(self.call(url,cookie=cookie,extra={'QUERY_STRING':'download=1&compat=hvc1'})[0]['status'],'400 Bad Request')
+    self.assertEqual(file.read_bytes(),original)
+    file.write_bytes(b'changed');self.assertEqual(self.call(url,cookie=cookie,extra=q)[0]['status'],'404 Not Found')
  def test_archive_media_info_checks_access_and_file_identity(self):
     from unittest.mock import patch
     from sunhill_nvr.media import MediaError

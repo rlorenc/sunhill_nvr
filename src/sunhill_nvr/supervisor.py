@@ -2,8 +2,10 @@
 from __future__ import annotations
 import datetime as dt
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import logging
+import json
 import os
 import re
 import secrets
@@ -36,11 +38,23 @@ class ProcessState:
     stopping_at: float | None = None
     last_segment_at: float | None = None
     segment_seconds: int = 300
+    hevc: bool = False
+
+def probe_rtsp_codec(slug: str) -> str | None:
+    """Bounded probe of the same local main alias; failure never blocks recording."""
+    if not SLUG.fullmatch(slug):return None
+    try:
+        result=subprocess.run(['/usr/bin/ffprobe','-v','error','-rtsp_transport','tcp','-timeout','3000000',
+                               '-analyzeduration','1000000','-probesize','1000000','-select_streams','v:0',
+                               '-show_entries','stream=codec_name','-of','json',f'rtsp://127.0.0.1:8554/{slug}'],
+                              stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=5,check=True)
+        return json.loads(result.stdout)['streams'][0]['codec_name']
+    except (OSError,subprocess.SubprocessError,ValueError,KeyError,IndexError,TypeError):return None
 
 class Supervisor:
     def __init__(self,staging: Path,archive: Path,*,timezone: str='Europe/Warsaw',
                  active: Callable[[Path],bool],spawn=None,inspect=None,archive_lock: Path | None = None,monotonic=None,
-                 segment_watchdog_seconds: int = 1200):
+                 segment_watchdog_seconds: int = 1200, codec_probe=None):
         if staging.is_symlink() or archive.is_symlink() or not staging.is_dir() or not archive.is_dir():
             raise ValueError('recording roots must be available real directories')
         if not same_recording_mount(staging,archive):
@@ -48,6 +62,8 @@ class Supervisor:
         self.staging=staging;self.archive=archive;self.zone=ZoneInfo(timezone);self.active=active
         self.spawn=spawn or (lambda command:subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,env={'PATH':'/usr/bin:/bin','TZ':timezone,'LANG':'C.UTF-8'}))
         self.inspect=inspect or probe
+        self.codec_probe=codec_probe
+        self.untagged_retry=set()
         self.archive_lock=archive_lock
         self.monotonic=monotonic or time.monotonic
         if type(segment_watchdog_seconds) is not int or segment_watchdog_seconds < 30:
@@ -102,7 +118,8 @@ class Supervisor:
                 # Alternate strategies after an early failure; video always remains
                 # stream-copied and a successful long-running strategy is retained.
                 if slug in cameras and state.stopping_at is None and code!=0 and now-state.started_at<60:
-                    self.audio_modes[slug]='aac' if state.audio=='copy' else 'copy'
+                    if state.hevc:self.untagged_retry.add(slug)
+                    else:self.audio_modes[slug]='aac' if state.audio=='copy' else 'copy'
                 self.failures[slug]=min(self.failures.get(slug,0)+1,8)
                 self.next_attempt[slug]=now+min(300,2**self.failures[slug])
             elif state.stopping_at is None:
@@ -116,8 +133,14 @@ class Supervisor:
                     try:state.process.terminate()
                     except ProcessLookupError:pass
                     state.stopping_at=now
-        for slug in cameras:
-            if slug in self.running or now<self.next_attempt.get(slug,0):continue
+        self.untagged_retry.intersection_update(configured_cameras)
+        starting=sorted(slug for slug in cameras if slug not in self.running and now>=self.next_attempt.get(slug,0))
+        hints={}
+        to_probe=[slug for slug in starting if slug not in self.untagged_retry]
+        if self.codec_probe is not None and to_probe:
+            with ThreadPoolExecutor(max_workers=min(8,len(to_probe))) as pool:
+                hints=dict(zip(to_probe,pool.map(self.codec_probe,to_probe)))
+        for slug in starting:
             session=secrets.token_hex(16)
             try:
                 prepare_days(self.staging,slug,today,days=3,session=session)
@@ -128,7 +151,8 @@ class Supervisor:
                 continue
             self.preparation_failures.discard(slug)
             audio=self.audio_modes.get(slug,'copy')
-            command=recording_command(slug,self.staging,session=session,audio=audio,segment_seconds=segment_seconds)
+            hevc=hints.get(slug)=='hevc'
+            command=recording_command(slug,self.staging,session=session,audio=audio,segment_seconds=segment_seconds,hevc=hevc)
             try:
                 process=self.spawn(command)
             except OSError:
@@ -136,7 +160,8 @@ class Supervisor:
                 self.failures[slug]=min(self.failures.get(slug,0)+1,8)
                 self.next_attempt[slug]=now+min(300,2**self.failures[slug])
                 continue
-            self.running[slug]=ProcessState(process,session,now,audio,last_segment_at=self.monotonic(),segment_seconds=segment_seconds)
+            self.untagged_retry.discard(slug)
+            self.running[slug]=ProcessState(process,session,now,audio,last_segment_at=self.monotonic(),segment_seconds=segment_seconds,hevc=hevc)
         # Only configured camera staging trees are visited. Stale sessions survive
         # service crashes and are processed after the file-activity check succeeds.
         staged={p.name for p in self.staging.iterdir() if p.is_dir() and not p.is_symlink() and SLUG.fullmatch(p.name)}

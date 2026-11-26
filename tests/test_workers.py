@@ -29,7 +29,7 @@ class WorkerTests(unittest.TestCase):
  def test_recording_health_threshold_controls_worker_and_invalid_value_falls_back(self):
     from types import SimpleNamespace
     from sunhill_nvr import workers
-    config=SimpleNamespace(archive=Path('/archive'))
+    config=SimpleNamespace(archive=Path('/archive'),database=Path('/nonexistent/sunhill.sqlite'))
     with self.db:self.db.execute("INSERT INTO system_settings VALUES('recording_stale_after','1800')")
     with patch('sunhill_nvr.workers.health_service.update') as update,patch('sunhill_nvr.workers.service_monitor.check'),patch('sunhill_nvr.workers.storage_guard',side_effect=OSError('unavailable')),patch('sunhill_nvr.workers.health_service.storage_unavailable') as unavailable,patch('sunhill_nvr.workers.health_service.deliver') as deliver:
         workers.health_once(config,self.db)

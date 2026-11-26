@@ -43,7 +43,7 @@ class MonitoringHTTPIntegrationTests(unittest.TestCase):
                     db.executemany('INSERT INTO system_settings VALUES (?,?)',[('ha_url',url),('ha_token','test-token'),('ha_enabled','1'),('recording_stale_after','60')])
                     db.execute("INSERT INTO cameras VALUES(1,'brama','Brama',1)")
                     db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://cam','ftp',?)",(int(time.time())-120,))
-                config=SimpleNamespace(archive=Path('/unused'),minimum_free=10,free_buffer=0)
+                config=SimpleNamespace(archive=Path('/unused'),minimum_free=10,free_buffer=0,database=Path('/nonexistent/sunhill.sqlite'))
                 with patch('sunhill_nvr.workers.storage_guard',return_value=lambda:True),patch('sunhill_nvr.workers.space_for',return_value=SimpleNamespace(free_for_service=9)),patch('sunhill_nvr.workers.service_monitor.check'):
                     workers.health_once(config,db);workers.health_once(config,db)
                 self.assertEqual(received,[{'camera':'brama','state':'stale'},{'camera':'storage','state':'disk_low'}])

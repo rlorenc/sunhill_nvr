@@ -11,7 +11,7 @@ from . import activity_rpc,archive,database,mount,protection,retention,health_se
 from .media import probe
 from .files import open_confined,acquire_shared
 from .storage import identify_directory as identify,space_for
-from .supervisor import Supervisor
+from .supervisor import Supervisor,probe_rtsp_codec
 from .cameras import SLUG
 from . import fd_mount
 
@@ -206,7 +206,7 @@ def retention_preview_once(config,db) -> None:
         return
 
 def recorder_supervisor(config) -> Supervisor:
-    return Supervisor(config.staging,config.archive,timezone=config.timezone,active=detector(config,'staging'),archive_lock=config.archive_lock)
+    return Supervisor(config.staging,config.archive,timezone=config.timezone,active=detector(config,'staging'),archive_lock=config.archive_lock,codec_probe=probe_rtsp_codec)
 
 def update_recorder_faults(db, corrupt: set[str], *, blocked: set[str] | None=None,
                            staging: set[str] | None=None, process: set[str] | None=None, now: int | None=None) -> None:
@@ -272,6 +272,8 @@ def selected_recorders(db) -> set[str]:
 
 
 def health_once(config,db) -> None:
+    from . import archive_compat
+    archive_compat.cleanup(config.database.parent/'.archive-hvc1-cache')
     try:stale_after=health_service.stale_threshold(db)
     except ValueError:
         logging.error('Sunhill recording health threshold invalid; using default')

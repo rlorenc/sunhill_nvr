@@ -13,8 +13,8 @@ System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wi
 | Podgląd na żywo | Wielokamerowa siatka, ręczna zmiana położenia i rozmiaru kafelków, pełny ekran, dźwięk i wybór jakości zapamiętywany dla każdej kamery. |
 | Kamery IP | Dodawanie po adresie IP, wykrywanie strumieni RTSP przez ONVIF i znane ścieżki producentów, konfiguracja ręczna oraz identyfikacja modelu. |
 | Sterowanie kamerami | Reflektor, IR, zoom optyczny, ostrość, autofocus i zapisane pozycje PTZ w obsługiwanych urządzeniach Reolink. Funkcje zależą od możliwości kamery i protokołu. |
-| Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo, odbiór nagrań przez FTP oraz segmenty RTSP od 30 sekund do 60 minut. |
-| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. |
+| Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo (HEVC z oznaczeniem `hvc1` po rozpoznaniu kodeka), odbiór nagrań przez FTP oraz segmenty RTSP od 30 sekund do 60 minut. |
+| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
 | Import nagrań | Przyrostowe indeksowanie istniejących plików MP4, wybór kamery i okresu, wstrzymywanie skanu oraz liczniki postępu. |
 | Eksport | Pobieranie oryginalnych plików, eksport wybranego fragmentu do MP4, zapisywanie klatek i ochrona nagrań przed rotacją. |
 | Magazyn danych | Konfigurowalne katalogi nagrań, bufora i eksportów, automatyczna rotacja, kontrola wolnego miejsca oraz wymiana dysku bez rejestrowania UUID. |
@@ -46,11 +46,11 @@ Aplikacja nie wymaga osobnego klienta ani zewnętrznego serwera bazy danych. Nag
 
 Platforma: **Ubuntu Server 26.04 LTS**, serwer fizyczny lub maszyna wirtualna. Potrzebne są uprawnienia root, dostęp do sieci kamer, przestrzeń na nagrania i dostęp do repozytoriów zależności.
 
-Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład dla 0.3.15:
+Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład dla 0.3.16:
 
 ```bash
-tar -xzf sunhill-nvr-0.3.15.tar.gz
-cd sunhill-nvr-0.3.15
+tar -xzf sunhill-nvr-0.3.16.tar.gz
+cd sunhill-nvr-0.3.16
 bash install.sh
 ```
 

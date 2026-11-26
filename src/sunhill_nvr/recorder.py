@@ -39,7 +39,7 @@ def validate_staging_parts(parts: tuple[str, ...]) -> None:
 
 def recording_command(slug: str, staging_root: Path, *, segment_seconds: int = 300,
                       rtsp_port: int = 8554, ffmpeg: str = 'ffmpeg', session: str | None = None,
-                      audio: str = 'copy', io_timeout_seconds: int = 30) -> list[str]:
+                      audio: str = 'copy', io_timeout_seconds: int = 30, hevc: bool = False) -> list[str]:
     """Record a local go2rtc alias without exposing camera credentials in argv."""
     if not SLUG.fullmatch(slug) or not 1 <= rtsp_port <= 65535:
         raise ValueError('invalid camera or port')
@@ -57,6 +57,7 @@ def recording_command(slug: str, staging_root: Path, *, segment_seconds: int = 3
     return [ffmpeg, '-hide_banner', '-nostdin', '-loglevel', 'warning',
             '-rtsp_transport', 'tcp', '-timeout', str(io_timeout_seconds*1000000), '-i', f'rtsp://127.0.0.1:{rtsp_port}/{quote(slug)}',
             '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', audio,
+            *(['-bsf:v', 'hevc_mp4toannexb', '-tag:v', 'hvc1'] if hevc else []),
             '-f', 'segment', '-segment_time', str(segment_seconds),
             '-reset_timestamps', '1', '-strftime', '1',
             '-segment_format', 'mp4', '-segment_format_options', 'movflags=+frag_keyframe+empty_moov+default_base_moof', str(output)]

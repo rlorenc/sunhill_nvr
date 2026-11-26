@@ -28,7 +28,7 @@ from . import camera_discovery,player_assets,camera_statistics,camera_control
 from .nginx_config import HOST
 from .fd_mount import MountBoundary,MountUnavailable
 from .files import FileBody, InvalidRange, acquire_shared, open_confined, open_export, delete_export, parse_range, recorded_identity
-from . import __version__, approved_update, ftp_accounts, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
+from . import archive_compat, __version__, approved_update, ftp_accounts, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
 
 MAX_BODY=16*1024
 ARCHIVE_PAGE_SIZE=10000
@@ -1209,7 +1209,8 @@ class Application:
         if match and method in ('GET','HEAD'):
             rid=int(match.group(1))
             params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
-            if set(params)-{'download'} or len(params.get('download',[]))>1 or params.get('download',['0'])[0] not in ('0','1'):
+            if (set(params)-{'download','compat'} or len(params.get('download',[]))>1 or params.get('download',['0'])[0] not in ('0','1')
+                or ('compat' in params and params['compat']!=['hvc1']) or ('compat' in params and params.get('download')==['1'])):
                 raise APIError('400 Bad Request','Nieprawidłowe parametry nagrania')
             download=params.get('download',['0'])[0]=='1'
             row=db.execute('SELECT recordings.relative_path,recordings.file_size,recordings.mtime_ns,cameras.id,cameras.slug,i.device,i.inode,i.ctime_ns FROM recordings JOIN cameras ON cameras.slug=recordings.camera LEFT JOIN recording_identity i ON i.relative_path=recordings.relative_path WHERE recordings.id=?',(rid,)).fetchone()
@@ -1222,15 +1223,28 @@ class Application:
                 except BaseException:
                     os.close(fd);raise
             except (OSError,ValueError,MountBoundary,MountUnavailable):raise APIError('404 Not Found','Nagranie jest niedostępne lub zostało zmienione')
+            held_fd=None
+            if 'compat' in params:
+                try:
+                    compatible=archive_compat.open_compatible(self.db_path.parent/'.archive-hvc1-cache',fd)
+                    if compatible is not None:held_fd=fd;fd,info=compatible
+                    if not security.may_access(db,security.get_user(db,token),row[3]):raise APIError('403 Forbidden','Odmowa dostępu')
+                except BaseException as exc:
+                    os.close(fd)
+                    if held_fd is not None:os.close(held_fd)
+                    if isinstance(exc,limits.BusyError):raise APIError('429 Too Many Requests','Przygotowywanie zgodnego nagrania zajęte; ponów próbę') from exc
+                    if isinstance(exc,(OSError,ValueError,media.MediaError)):raise APIError('422 Unprocessable Entity','Nie udało się przygotować nagrania HEVC hvc1') from exc
+                    raise
             try:part=parse_range(environ.get('HTTP_RANGE'),info.st_size)
             except InvalidRange:
                 os.close(fd)
+                if held_fd is not None:os.close(held_fd)
                 return '416 Range Not Satisfiable',b'',[('Content-Range',f'bytes */{info.st_size}')]
             status='206 Partial Content' if environ.get('HTTP_RANGE') else '200 OK'
             headers=[('Content-Type','video/mp4'),('Content-Length',str(part.length)),('Accept-Ranges','bytes')]
             if download:headers.append(('Content-Disposition',f'attachment; filename="sunhill-{rid}.mp4"'))
             if status.startswith('206'):headers.append(('Content-Range',f'bytes {part.start}-{part.end}/{part.total}'))
-            return status,FileBody(fd,part,authorize=self.stream_authorizer(token,row[3],download=download),head=method=='HEAD'),headers
+            return status,FileBody(fd,part,authorize=self.stream_authorizer(token,row[3],download=download),head=method=='HEAD',held_fd=held_fd),headers
         if url=='/internal/live-auth' and method=='GET':
             # nginx supplies this header itself and strips any client-supplied copy.
             original=environ.get('HTTP_X_ORIGINAL_URI','')

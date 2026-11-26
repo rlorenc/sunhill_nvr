@@ -51,13 +51,16 @@ with tempfile.TemporaryDirectory() as directory:
         const good={id:1,local_time:day+'T10:00:00',utc_first:day+'T09:00:00Z',utc_second:null,duration:4};
         const bad={id:2,local_time:day+'T10:00:04',utc_first:day+'T09:00:04Z',utc_second:null,duration:4};
         window.badURL=URL.createObjectURL(new Blob(['not a valid mp4'],{type:'video/mp4'}));
-        archiveSource=id=>id===2?badURL:sampleURLs[0];
+        archiveCompatCameras.clear();archiveSource=id=>id===2?badURL:sampleURLs[0];
         api=async url=>url.includes('media-info')?{streams:[{type:'video',codec:'hevc',tag:'hev1'}]}:url.includes('/recordings?')?{recordings:[good,bad],next_cursor:null}:{events:[],next_cursor:null};
         fetch=async()=>({ok:true,status:200,headers:{get:()=> 'video/mp4'}});
         archiveRecordId=null;loadedArchiveDate=null;loadArchive(true);""")
         page.wait_for_function("document.querySelector('#archive-player').readyState>=2 && !document.querySelector('#archive-player').paused && document.querySelector('#archive-playback-note').textContent.includes('Nagranie #2')", timeout=10000)
         assert page.evaluate('archiveTest.id()===1')
         assert 'hevc' in page.locator('#archive-playback-note').inner_text()
+        # Simulate a browser that rejects the original tag but accepts its remux.
+        page.evaluate("code=>runArchiveTest(code)","""archiveCompatCameras.clear();playbackGeneration++;clearArchiveBuffers();const player=$('archive-player');player.pause();player.removeAttribute('src');player.load();archiveRecordId=null;loadedArchiveDate=null;archiveSource=id=>id===2&&!archiveCompatCameras.has(activeCamera.id)?badURL:sampleURLs[id-1];loadArchive(true);""")
+        page.wait_for_function("archiveTest.id()===2 && document.querySelector('#archive-player').readyState>=2 && !document.querySelector('#archive-player').paused && document.querySelector('#archive-playback-note').hidden", timeout=15000)
         assert not errors,errors
         browser.close()
         print('Chromium: real MP4 decoding, adjacent prefetch, forward/back seek while paused, full-screen video stage remains active, cleanup OK')
