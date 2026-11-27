@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerServiceTests(unittest.TestCase):
-    def run_helper(self, present, fail=None, function="disable_distribution_proftpd"):
+    def run_helper(self, present, fail=None, function="start_initial_services"):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             executable = root / 'systemctl'
@@ -127,39 +127,6 @@ sys.exit(1 if os.environ.get('DENY') in args else 0)
             self.assertNotEqual(check('',key),0);self.assertNotEqual(check(cert,''),0)
             link=root/'link';link.symlink_to(cert)
             self.assertNotEqual(check(link,key),0)
-
-    def test_preexisting_socket_or_service_blocks_install(self):
-        for present in (['proftpd.socket'],['proftpd.service']):
-            code,calls=self.run_helper(present,function='refuse_existing_proftpd')
-            self.assertNotEqual(code,0)
-            self.assertFalse(any(call.startswith('disable ') for call in calls))
-        code,_=self.run_helper([],function='refuse_existing_proftpd')
-        self.assertEqual(code,0)
-
-    def test_missing_socket_does_not_abort_install(self):
-        code,calls=self.run_helper(['proftpd.service'])
-        self.assertEqual(code,0)
-        self.assertIn('disable --now proftpd.service',calls)
-        self.assertNotIn('disable --now proftpd.socket',calls)
-
-    def test_failure_disabling_present_unit_aborts_install(self):
-        code,_=self.run_helper(['proftpd.service'],fail='proftpd.service')
-        self.assertNotEqual(code,0)
-
-    def test_failed_package_install_stops_new_distribution_ftp(self):
-        code,calls=self.run_helper(['proftpd.service'],function='cleanup_failed_package_install 1 1 0')
-        self.assertEqual(code,0)
-        self.assertIn('disable --now proftpd.service',calls)
-        for state in ('0 1 0','1 0 0','1 1 1'):
-            with self.subTest(state=state):
-                code,calls=self.run_helper(['proftpd.service'],function='cleanup_failed_package_install '+state)
-                self.assertEqual(code,0)
-                self.assertEqual(calls,[])
-        code,_=self.run_helper(['proftpd.service'],fail='proftpd.service',function='cleanup_failed_package_install 1 1 0')
-        self.assertNotEqual(code,0)
-        code,calls=self.run_helper(['proftpd.socket','proftpd.service'],fail='proftpd.socket',function='cleanup_failed_package_install 1 1 0')
-        self.assertNotEqual(code,0)
-        self.assertIn('disable --now proftpd.service',calls)
 
     def test_runtime_dependency_checks_report_missing_or_non_executable_files(self):
         with tempfile.TemporaryDirectory() as name:

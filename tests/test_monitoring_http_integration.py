@@ -42,7 +42,7 @@ class MonitoringHTTPIntegrationTests(unittest.TestCase):
                 with db:
                     db.executemany('INSERT INTO system_settings VALUES (?,?)',[('ha_url',url),('ha_token','test-token'),('ha_enabled','1'),('recording_stale_after','60')])
                     db.execute("INSERT INTO cameras VALUES(1,'brama','Brama',1)")
-                    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://cam','ftp',?)",(int(time.time())-120,))
+                    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://cam','rtsp',?)",(int(time.time())-120,))
                 config=SimpleNamespace(archive=Path('/unused'),minimum_free=10,free_buffer=0,database=Path('/nonexistent/sunhill.sqlite'))
                 with patch('sunhill_nvr.workers.storage_guard',return_value=lambda:True),patch('sunhill_nvr.workers.space_for',return_value=SimpleNamespace(free_for_service=9)),patch('sunhill_nvr.workers.service_monitor.check'):
                     workers.health_once(config,db);workers.health_once(config,db)
@@ -129,7 +129,7 @@ class MonitoringHTTPIntegrationTests(unittest.TestCase):
                 with db:
                     for cid,slug in ((1,'bad-camera'),(2,'good-camera')):
                         db.execute('INSERT INTO cameras VALUES(?,?,?,1)',(cid,slug,slug))
-                        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,onvif_username,onvif_password,onvif_auth) VALUES(?,'rtsp://x','ftp',?,?,?,'wsse')",(cid,url+'/onvif/device_service',slug,'secret'))
+                        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,onvif_username,onvif_password,onvif_auth) VALUES(?,'rtsp://x','rtsp',?,?,?,'wsse')",(cid,url+'/onvif/device_service',slug,'secret'))
                 clock_service.check(db)
             self.assertEqual(db.execute("SELECT name,state FROM system_health ORDER BY name").fetchall(),[('clock:1','clock_unavailable'),('clock:2','clock_ok')])
             self.assertEqual(db.execute('SELECT source,state FROM pending_notifications').fetchall(),[('bad-camera','clock_unavailable')])

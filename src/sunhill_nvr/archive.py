@@ -208,7 +208,7 @@ def index_published(db: sqlite3.Connection, root: Path, path: Path, timezone_nam
                     signature: tuple[int,int,int,int], inspection: dict, *, mount_check) -> None:
     """Index only a supervisor-verified, already atomically published RTSP file.
 
-    Caller holds the shared archive lock. FTP and normal scan policies are unchanged.
+    Caller holds the shared archive lock. Normal scan policies are unchanged.
     """
     if not mount_check():raise RuntimeError('archive mount unavailable')
     relative=str(path.relative_to(root))

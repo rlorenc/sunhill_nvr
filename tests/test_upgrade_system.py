@@ -21,7 +21,7 @@ class UpgradeSystemTests(unittest.TestCase):
         (state/'managed-units.json').write_text(json.dumps(old_names));(state/'lifecycle.json').write_text(json.dumps(lifecycle.default()))
         for name in old_names:(units/name).write_text('stable recovery' if name.startswith('sunhill-upgrade-') else 'old '+name)
         if conflict:(units/'sunhill-motion.service').write_text('unmanaged')
-        wanted={'version':1,'active':[name for name in lifecycle.ACTIVE if name!='sunhill-clock.service']+['sunhill-motion.service'],
+        wanted={'version':2,'active':[name for name in lifecycle.ACTIVE if name!='sunhill-clock.service']+['sunhill-motion.service'],
                 'enabled':[name for name in lifecycle.ENABLED if name!='sunhill-clock.service']+['sunhill-motion.service']}
         calls=[]
         def run(args,**kwargs):
@@ -35,7 +35,7 @@ class UpgradeSystemTests(unittest.TestCase):
                     (generated/'units'/name).write_text(body)
                 (generated/'nginx.conf').write_text('if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }\nnew proxy')
                 (generated/'lifecycle.json').write_text(json.dumps(wanted))
-            disabled={'sunhill-go2rtc.service','sunhill-ftp.service','sunhill-export.service'}
+            disabled={'sunhill-go2rtc.service','sunhill-export.service'}
             if args[:2]==['/usr/bin/systemctl','is-enabled']:
                 disabled_unit=args[-1] in disabled
                 return subprocess.CompletedProcess(args,1 if disabled_unit else 0,stdout=b'disabled\n' if disabled_unit else b'enabled\n')
@@ -63,8 +63,7 @@ class UpgradeSystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);adapter,backup,units,proxy,calls,old_names,new_names=self.modern_fixture(root)
             proxy.write_text('if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }\nold proxy')
-            original=Path.is_file
-            with patch.object(Path,'is_file',autospec=True,side_effect=lambda p:True if str(p)=='/usr/sbin/proftpd' else original(p)):
+            if True:
                 adapter.backup_system(root/'candidate',backup);adapter.apply_system(backup)
                 reverse=root/'reverse';adapter.backup_rollback_system(backup,reverse);adapter.apply_system(reverse)
                 self.assertEqual(adapter._managed_names(),old_names);self.assertFalse((units/'sunhill-motion.service').exists())
@@ -253,6 +252,8 @@ class UpgradeSystemTests(unittest.TestCase):
             calls.append(args)
             return subprocess.CompletedProcess(args,1 if args[-1] in fail else 0)
         adapter=SystemAdapter(Path('/config'),Path('/current'),Path('/state'),Path('/maintenance'),1000,1000,run,0)
+        from sunhill_nvr import lifecycle
+        patcher=patch.object(SystemAdapter,'_runtime',return_value=lifecycle.default());patcher.start();self.addCleanup(patcher.stop)
         adapter.stop()
         self.assertEqual(calls[0][-1],'sunhill-controller.timer');self.assertEqual(calls[1][-1],'sunhill-controller.service')
         class Response:
@@ -267,38 +268,12 @@ class UpgradeSystemTests(unittest.TestCase):
              patch('sunhill_nvr.upgrade_system.service_ready',return_value=True) as ready:
             self.assertTrue(adapter.healthy())
             self.assertEqual([call[-1] for call in calls],list(SERVICES)+['nginx.service'])
-            self.assertEqual([call.args[0] for call in ready.call_args_list],['sunhill-go2rtc.service','sunhill-ftp.service'])
+            self.assertEqual([call.args[0] for call in ready.call_args_list],['sunhill-go2rtc.service'])
             fail.add('sunhill-recorder.service');self.assertFalse(adapter.healthy());fail.clear()
             fail.add('nginx.service');self.assertFalse(adapter.healthy());fail.clear()
-            for unavailable in ('sunhill-go2rtc.service','sunhill-ftp.service'):
+            for unavailable in ('sunhill-go2rtc.service',):
                 ready.side_effect=lambda service,**kwargs:service!=unavailable
                 self.assertFalse(adapter.healthy())
-
-    def test_managed_units_and_proxy_are_restored_after_update(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);state=root/'state';state.mkdir();units=root/'units';units.mkdir();proxy=root/'nginx.conf'
-            names=['sunhill-upgrade-apply.service','sunhill-web.service']
-            (state/'managed-units.json').write_text(json.dumps(names))
-            (units/names[0]).write_text('stable recovery unit');(units/names[1]).write_text('old web unit');proxy.write_text('old proxy')
-            calls=[]
-            def run(args,**kwargs):
-                calls.append(args)
-                if 'sunhill_nvr.deployment_cli' in args:
-                    generated=Path(args[args.index('--output')+1]);(generated/'units').mkdir()
-                    (generated/'units'/names[0]).write_text('stable recovery unit');(generated/'units'/names[1]).write_text('new web unit')
-                    (generated/'nginx.conf').write_text('if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }\nnew proxy')
-                return subprocess.CompletedProcess(args,0)
-            adapter=SystemAdapter(root/'config',root/'current',state,root/'maintenance',1000,1000,run,0,units,proxy,root/'missing-cert',root/'missing-key')
-            backup=root/'backup';adapter.backup_system(root/'candidate',backup)
-            adapter.apply_system(backup)
-            self.assertEqual((units/names[1]).read_text(),'new web unit');self.assertIn('new proxy',proxy.read_text())
-            adapter.restore_system(backup)
-            self.assertEqual((units/names[1]).read_text(),'old web unit');self.assertEqual(proxy.read_text(),'old proxy')
-            self.assertTrue(any(call[:2]==['/usr/bin/systemd-analyze','verify'] for call in calls))
-            calls.clear();adapter.restore_system_offline(backup)
-            self.assertFalse(any(call[:3]==['/usr/bin/systemctl','reload','nginx.service'] for call in calls))
-            adapter.finalize_system()
-            self.assertTrue(any(call[:3]==['/usr/bin/systemctl','reload','nginx.service'] for call in calls))
 
     def test_update_rejects_new_unit_without_modifying_installed_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:

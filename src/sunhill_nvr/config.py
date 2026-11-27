@@ -46,7 +46,7 @@ def parse(raw: dict) -> Config:
     if type(minimum) is not int or type(buffer) is not int or minimum<0 or buffer<0 or minimum+buffer>2**63-1:
         raise ValueError('invalid storage limits')
     validate_media_layout(paths[1],paths[2],paths[3])
-    # FTP and recording workers can write the media trees. Never allow a
+    # Recording workers can write the media trees. Never allow a
     # database, lock, activity socket or privileged daemon configuration to
     # reside inside one of them (or to alias a media root).
     def overlap(a,b):return a==b or a in b.parents or b in a.parents

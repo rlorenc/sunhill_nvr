@@ -43,7 +43,7 @@ def handle_connection(connection, *, allowed_uid: int, archive: Path, staging: P
         uid=peer_uid(connection)
         if uid!=allowed_uid:raise PermissionError('unauthorized peer')
         # Retention holds its own exclusive file descriptor during this check.
-        # Ignore only this authenticated local caller; FFmpeg, FTP, web and
+        # Ignore only this authenticated local caller; FFmpeg, web and
         # every other process remain visible to the privileged scan.
         pid=peer_pid(connection)
         result=handle(read_message(connection),peer_uid=uid,allowed_uid=allowed_uid,archive=archive,staging=staging,exports=exports,scan=lambda:snapshot(ignore={pid}))

@@ -1,25 +1,5 @@
 #!/usr/bin/env bash
 # Helpers used by the installer. Keep service management fail-closed.
-disable_distribution_proftpd() {
-    local unit failed=0
-    for unit in proftpd.socket proftpd.service; do
-        if systemctl cat "$unit" >/dev/null 2>&1; then
-            systemctl disable --now "$unit" || failed=1
-        fi
-    done
-    return "$failed"
-}
-
-cleanup_failed_package_install() {
-    local status=$1 started=$2 stopped=$3
-    if (( status != 0 && started == 1 && stopped == 0 )); then
-        if ! disable_distribution_proftpd; then
-            printf '%s\n' 'Could not stop the distribution ProFTPD service after package installation failed. Check systemctl immediately.' >&2
-            return 1
-        fi
-    fi
-}
-
 validate_executable_dependencies() {
     local dependency
     for dependency in "$@"; do
@@ -35,16 +15,6 @@ refuse_existing_paths() {
     for path in "$@"; do
         if [[ -e "$path" || -L "$path" ]]; then
             printf 'Existing Sunhill path found: %s\n' "$path" >&2
-            return 1
-        fi
-    done
-}
-
-refuse_existing_proftpd() {
-    local unit
-    for unit in proftpd.socket proftpd.service; do
-        if systemctl cat "$unit" >/dev/null 2>&1; then
-            printf 'Existing ProFTPD unit found: %s\n' "$unit" >&2
             return 1
         fi
     done
@@ -217,19 +187,6 @@ for directory, dirs, files in os.walk(root, followlinks=False):
 PY
 }
 
-validate_inactive_proftpd() {
-    local unit state enabled
-    for unit in proftpd.socket proftpd.service; do
-        if systemctl cat "$unit" >/dev/null 2>&1; then
-            state=$(systemctl show -p ActiveState --value "$unit") || return 1
-            enabled=$(systemctl show -p UnitFileState --value "$unit") || return 1
-            if [[ "$state" != inactive || ( "$enabled" != disabled && "$enabled" != static && "$enabled" != masked ) ]]; then
-                printf 'Existing ProFTPD unit is not stopped and disabled: %s\n' "$unit" >&2; return 1
-            fi
-        fi
-    done
-}
-
 # A stopped unit can be unloaded by systemd even though its unit file exists.
 # reset-failed then returns nonzero. Only a verified inactive, installed unit
 # is an acceptable fallback; bus failures and missing unit files remain fatal.
@@ -259,8 +216,8 @@ start_initial_services() {
         if ! systemctl start "$unit"; then
             printf 'Initial service failed: %s\n' "$unit" >&2
             systemctl --failed --no-pager >&2 || true
-            systemctl status sunhill-upgrade-recover.service sunhill-upgrade-ready.service sunhill-activity.service sunhill-controller.service sunhill-ftp-policy.service sunhill-ftp.service sunhill-go2rtc.service --no-pager -l >&2 || true
-            journalctl -b -u sunhill-upgrade-recover.service -u sunhill-upgrade-ready.service -u sunhill-activity.service -u sunhill-controller.service -u sunhill-ftp-policy.service -u sunhill-ftp.service -u sunhill-go2rtc.service -n 150 --no-pager -l >&2 || true
+            systemctl status sunhill-upgrade-recover.service sunhill-upgrade-ready.service sunhill-activity.service sunhill-controller.service sunhill-go2rtc.service --no-pager -l >&2 || true
+            journalctl -b -u sunhill-upgrade-recover.service -u sunhill-upgrade-ready.service -u sunhill-activity.service -u sunhill-controller.service -u sunhill-go2rtc.service -n 150 --no-pager -l >&2 || true
             return 1
         fi
     done

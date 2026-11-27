@@ -6,18 +6,15 @@ from sunhill_nvr import security,database,archive,health_service
 class HealthTests(unittest.TestCase):
  def setUp(self):
     self.db=sqlite3.connect(':memory:');security.initialize(self.db);database.migrate(self.db);archive.initialize(self.db)
-    self.db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://x','ftp',100)");self.db.commit()
+    self.db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://x','rtsp',100)");self.db.commit()
  def tearDown(self):self.db.close()
- def test_long_rtsp_segments_extend_alarm_but_not_ftp(self):
+ def test_long_rtsp_segments_extend_alarm(self):
     with self.db:
         self.db.execute("UPDATE camera_details SET record_mode='rtsp' WHERE camera_id=1")
         self.db.execute("INSERT INTO system_settings(key,value) VALUES('recording_segment_seconds','3600')")
     health_service.update(self.db,now=1100,stale_after=900)
     self.assertEqual(self.db.execute('SELECT state FROM camera_health').fetchone()[0],'waiting')
     health_service.update(self.db,now=3821,stale_after=900)
-    self.assertEqual(self.db.execute('SELECT state FROM camera_health').fetchone()[0],'stale')
-    with self.db:self.db.execute("UPDATE camera_details SET record_mode='ftp' WHERE camera_id=1")
-    health_service.update(self.db,now=1100,stale_after=900)
     self.assertEqual(self.db.execute('SELECT state FROM camera_health').fetchone()[0],'stale')
  def test_stale_and_recovery_notifications_not_duplicated(self):
     health_service.update(self.db,now=110,stale_after=20)
@@ -39,7 +36,7 @@ class HealthTests(unittest.TestCase):
         self.db.execute("UPDATE camera_details SET recording_since='invalid' WHERE camera_id=1")
         self.db.execute("INSERT INTO camera_health VALUES(1,'invalid',1,1)")
         self.db.execute("INSERT INTO cameras VALUES(2,'cam2','Second',1)")
-        self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(2,'rtsp://second','ftp',100)")
+        self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(2,'rtsp://second','rtsp',100)")
         self.db.execute("INSERT INTO recordings(relative_path,camera,local_time,utc_first,duration,file_size,mtime_ns,generation) VALUES('cam/2026/11/21/190900.mp4','cam','2026-11-21T19:09:00','2026-11-21T18:09:00+00:00','invalid',1,1,1)")
     health_service.update(self.db,now=2000,stale_after=60)
     self.assertEqual(self.db.execute('SELECT camera_id,state FROM camera_health ORDER BY camera_id').fetchall(),[(1,'stale'),(2,'stale')])

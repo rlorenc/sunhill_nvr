@@ -11,7 +11,7 @@ from datetime import datetime
 
 # In-flight segments may be as long as one hour; allow publication/index lag.
 PUBLISH_GRACE = 2 * 3600
-NATIVE = "(source IN ('reolink','nvr-tamper','nvr-motion') OR source LIKE 'onvif-rule:%' OR source LIKE 'local-rule:%')"
+NATIVE = "(source IN ('reolink','nvr-tamper','nvr-motion','nvr-plate') OR source LIKE 'onvif-rule:%' OR source LIKE 'local-rule:%')"
 
 
 def intervals(rows):

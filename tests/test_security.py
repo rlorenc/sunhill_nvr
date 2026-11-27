@@ -13,7 +13,7 @@ class PasswordFormTests(unittest.TestCase):
             def handle_starttag(self,tag,attrs):
                 a=dict(attrs)
                 if tag=='form':self.form=a.get('id')
-                if self.form in ('setup-form','own-password-form','user-form','ftp-form') and tag=='input' and a.get('type')=='password' and a.get('autocomplete')=='new-password':
+                if self.form in ('setup-form','own-password-form','user-form') and tag=='input' and a.get('type')=='password' and a.get('autocomplete')=='new-password':
                     self.fields.append((self.form,a.get('minlength'),a.get('maxlength')))
             def handle_endtag(self,tag):
                 if tag=='form':self.form=None

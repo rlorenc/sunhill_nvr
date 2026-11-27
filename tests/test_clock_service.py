@@ -7,7 +7,7 @@ from sunhill_nvr import security,database,clock_service
 class ClockTests(unittest.TestCase):
  def test_changed_onvif_settings_discard_inflight_result(self):
     db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
-    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','ftp','http://x/onvif/device_service')");db.commit()
+    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','rtsp','http://x/onvif/device_service')");db.commit()
     def changed(*args,**kwargs):
         with db:db.execute("UPDATE camera_details SET onvif_url='http://new/onvif/device_service' WHERE camera_id=1")
         return SimpleNamespace(offset_seconds=90)
@@ -16,7 +16,7 @@ class ClockTests(unittest.TestCase):
     db.close()
  def test_checks_offsets_and_queues_alarm_recovery(self):
     db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
-    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','ftp','http://x/onvif/device_service')");db.commit()
+    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','rtsp','http://x/onvif/device_service')");db.commit()
     clock_service.check(db,now=100,query=lambda *args,**kwargs:SimpleNamespace(offset_seconds=50))
     clock_service.check(db,now=200,query=lambda *args,**kwargs:SimpleNamespace(offset_seconds=0))
     self.assertEqual(db.execute('SELECT state,origin FROM pending_notifications ORDER BY id').fetchall(),[('clock_skew','onvif'),('clock_ok','onvif')]);db.close()
@@ -25,7 +25,7 @@ class ClockTests(unittest.TestCase):
     db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
     for cid,slug in ((1,'cam'),(2,'cam2')):
         db.execute('INSERT INTO cameras VALUES(?,?,?,1)',(cid,slug,slug))
-        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(?,'rtsp://x','ftp','http://x/onvif/device_service')",(cid,))
+        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(?,'rtsp://x','rtsp','http://x/onvif/device_service')",(cid,))
     db.commit()
     with patch('sunhill_nvr.clock_service.time.time',side_effect=[100,110,120]):
         clock_service.check(db,query=lambda *a,**k:SimpleNamespace(offset_seconds=50))
@@ -34,7 +34,7 @@ class ClockTests(unittest.TestCase):
  def test_failed_clock_replaces_old_alarm_and_recovers_without_duplicates(self):
     from sunhill_nvr.home_assistant import build_request
     db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
-    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','ftp','http://x/onvif/device_service')");db.commit()
+    db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)");db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url) VALUES(1,'rtsp://x','rtsp','http://x/onvif/device_service')");db.commit()
     clock_service.check(db,now=100,query=lambda *a,**k:SimpleNamespace(offset_seconds=50))
     def failed(*args,**kwargs):raise OSError('camera unavailable')
     clock_service.check(db,now=200,query=failed);clock_service.check(db,now=201,query=failed)
@@ -50,7 +50,7 @@ class ClockTests(unittest.TestCase):
     db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
     with db:
         db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
-        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,clock_checked) VALUES(1,'rtsp://x','ftp','http://x/onvif/device_service',1)")
+        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,clock_checked) VALUES(1,'rtsp://x','rtsp','http://x/onvif/device_service',1)")
         db.execute("INSERT INTO system_health VALUES('clock:1','clock_skew',1)")
     clock_service.check(db,now=2000,query=lambda *a,**k:SimpleNamespace(offset_seconds=50))
     clock_service.check(db,now=2001,query=lambda *a,**k:SimpleNamespace(offset_seconds=50))

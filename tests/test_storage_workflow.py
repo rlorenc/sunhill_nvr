@@ -24,7 +24,7 @@ class StorageWorkflowTests(unittest.TestCase):
             try:
                 user=security.create_user(db,'admin','password-for-tests','admin')
                 db.execute("INSERT INTO cameras VALUES(1,'cam','Camera',1)")
-                db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://cam','ftp',1)")
+                db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,recording_since) VALUES(1,'rtsp://cam','rtsp',1)")
                 db.executemany('INSERT INTO system_settings VALUES(?,?)',[('ha_url','http://127.0.0.1:8123'),('ha_token','test-token'),('ha_enabled','1')]);db.commit()
                 timestamp=datetime.now(ZoneInfo('Europe/Warsaw')).replace(microsecond=0)-timedelta(hours=1)
                 files=[]

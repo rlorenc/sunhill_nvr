@@ -67,7 +67,7 @@ def validate(data):
 
 def options(db,cid):
     row=db.execute('SELECT enabled,retention_days,rules_json,source_mode FROM camera_metadata_options WHERE camera_id=?',(cid,)).fetchone()
-    result={'enabled':bool(row[0]),'retention_policy':'archive','rules':json.loads(row[2]),'source_mode':row[3]} if row else {'enabled':True,'retention_policy':'archive','rules':[],'source_mode':'auto'}
+    result={'enabled':bool(row[0]),'retention_policy':'archive','rules':[],'source_mode':row[3]} if row else {'enabled':True,'retention_policy':'archive','rules':[],'source_mode':'auto'}
     status=db.execute('SELECT state,checked_ms FROM camera_metadata_status WHERE camera_id=?',(cid,)).fetchone()
     result['status']={'state':status[0],'checked_ms':status[1]} if status else None
     return result
@@ -75,6 +75,7 @@ def options(db,cid):
 
 def save_options(db,cid,data):
     validate(data)
+    if data['rules']:raise ValueError('spatial event rules retired')
     old=options(db,cid)['source_mode'];mode=data.get('source_mode',old)
     db.execute('INSERT INTO camera_metadata_options(camera_id,enabled,retention_days,rules_json,source_mode) VALUES(?,?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET enabled=excluded.enabled,retention_days=excluded.retention_days,rules_json=excluded.rules_json,source_mode=excluded.source_mode',(cid,int(data['enabled']),7,json.dumps(data['rules'],separators=(',',':')),mode))
     if not data['enabled'] or mode!=old:
@@ -146,6 +147,7 @@ def status(db,cid,url,state,*,expected_mode=None):
 
 
 def snapshot(db,cid,url,stamp,objects,session,engine,received=None, *, source="active",expected_mode=None):
+    objects=[o for o in objects if o['kind']!='package' and o.get('label')!='foreground_change']
     received=int(time.time()*1000) if received is None else received
     # Camera clocks must agree with the NVR recording clock; do not move detections to invented times.
     if abs(stamp-received)>30000:return False
@@ -165,9 +167,13 @@ def snapshot(db,cid,url,stamp,objects,session,engine,received=None, *, source="a
             return {(o['id'],o['kind'],o.get('plate_number'),o.get('label'),o.get('face_profile')) for o in items}
         if (last is None and objects) or (last and (last[2]!=session or signature(objects)!=signature(json.loads(last[1])) or (objects and stamp-last[0]>=1000))):
             db.execute('INSERT OR IGNORE INTO camera_metadata_history VALUES(?,?,?,?)',(cid,stamp,raw,session))
-        for rule,obj in engine.process(cfg['rules'],stamp,objects):
-            event_source=('local-rule:' if source=='local' else 'onvif-rule:')+rule['id']+':'+session+':'+obj['id'];seconds=stamp//1000
-            db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,ended_at,event_type,source,last_seen,zone,box_json) VALUES(?,?,?,?,?,?,?,?)',(cid,seconds,seconds,rule['type'],event_source,seconds,rule['name'],json.dumps(obj['box'])))
+        # Retired spatial rules must not produce events, including rules retained
+        # in a restored older SQLite snapshot. ANPR markers require a real number.
+        for obj in objects:
+            if not obj.get('plate_number'):continue
+            seconds=stamp//1000
+            db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,ended_at,event_type,source,last_seen) VALUES(?,?,?,?,?,?)',(cid,seconds,seconds,'plate','nvr-plate',seconds))
+            break
     return True
 
 
@@ -175,13 +181,13 @@ def live(db,user,now=None):
     from . import face_profiles
     now=int(time.time()*1000) if now is None else now
     labels=face_profiles.labels(db) if user and user[2]=='admin' else None
-    return {str(cid):{'stamp_ms':stamp,'objects':face_profiles.public_objects(json.loads(raw),labels),'session':session} for cid,stamp,raw,session in db.execute('SELECT l.camera_id,l.stamp_ms,l.objects_json,l.session FROM camera_metadata_latest l LEFT JOIN camera_metadata_options o ON o.camera_id=l.camera_id WHERE COALESCE(o.enabled,1)=1 AND l.received_ms BETWEEN ? AND ?',(now-3000,now+1000)) if security.may_access(db,user,cid,live=True)}
+    return {str(cid):{'stamp_ms':stamp,'objects':face_profiles.public_objects([o for o in json.loads(raw) if o['kind']!='package' and o.get('label')!='foreground_change'],labels),'session':session} for cid,stamp,raw,session in db.execute('SELECT l.camera_id,l.stamp_ms,l.objects_json,l.session FROM camera_metadata_latest l LEFT JOIN camera_metadata_options o ON o.camera_id=l.camera_id WHERE COALESCE(o.enabled,1)=1 AND l.received_ms BETWEEN ? AND ?',(now-3000,now+1000)) if security.may_access(db,user,cid,live=True)}
 
 
 def history(db,cid,stamp,user=None):
     from . import face_profiles
     labels=face_profiles.labels(db) if user and user[2]=='admin' else None
-    return [{'stamp_ms':t,'objects':face_profiles.public_objects(json.loads(raw),labels),'session':session} for t,raw,session in db.execute('SELECT stamp_ms,objects_json,session FROM camera_metadata_history WHERE camera_id=? AND stamp_ms BETWEEN ? AND ? ORDER BY stamp_ms LIMIT 64',(cid,stamp-5000,stamp+5000))]
+    return [{'stamp_ms':t,'objects':face_profiles.public_objects([o for o in json.loads(raw) if o['kind']!='package' and o.get('label')!='foreground_change'],labels),'session':session} for t,raw,session in db.execute('SELECT stamp_ms,objects_json,session FROM camera_metadata_history WHERE camera_id=? AND stamp_ms BETWEEN ? AND ? ORDER BY stamp_ms LIMIT 64',(cid,stamp-5000,stamp+5000))]
 
 
 def run_camera(config,cid,url,stop,mode="auto"):

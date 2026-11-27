@@ -46,6 +46,19 @@ class WebTests(unittest.TestCase):
     self.assertEqual(json.loads(self.call(url,cookie=viewer)[1])['workspace'],{'layout_id':None,'order':[],'sizes':{}})
     self.assertEqual(self.call(f'/api/layouts/{lid}','DELETE',cookie=cookie,csrf=csrf)[0]['status'],'200 OK')
     self.assertIsNone(json.loads(self.call(url,cookie=cookie)[1])['workspace']['layout_id'])
+ def test_detection_box_preference_is_personal_and_backward_compatible(self):
+    cookie,csrf=self.login();url='/api/live-workspace';base={'layout_id':None,'order':[],'sizes':{}}
+    self.assertEqual(self.call(url,'POST',{**base,'detection_boxes':False},cookie,csrf)[0]['status'],'200 OK')
+    self.assertEqual(json.loads(self.call(url,cookie=cookie)[1])['workspace']['detection_boxes'],False)
+    self.assertEqual(self.call(url,'POST',{**base,'detection_boxes':'false'},cookie,csrf)[0]['status'],'400 Bad Request')
+    self.assertEqual(self.call(url,'POST',base,cookie,csrf)[0]['status'],'200 OK')
+    self.assertEqual(json.loads(self.call(url,cookie=cookie)[1])['workspace']['detection_boxes'],False)
+    db=database.open_db(self.file);security.create_user(db,'boxviewer','password-for-viewer','viewer');db.close()
+    r,b=self.call('/api/login','POST',{'username':'boxviewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0];vcsrf=json.loads(b)['csrf']
+    self.assertIsNone(json.loads(self.call(url,cookie=viewer)[1])['workspace'])
+    self.assertEqual(self.call(url,'POST',{**base,'detection_boxes':True},viewer,vcsrf)[0]['status'],'200 OK')
+    self.assertEqual(json.loads(self.call(url,cookie=viewer)[1])['workspace']['detection_boxes'],True)
+    self.assertEqual(json.loads(self.call(url,cookie=cookie)[1])['workspace']['detection_boxes'],False)
  def test_metadata_api_acl_settings_and_history(self):
     from sunhill_nvr import object_analytics as analytics
     import time
@@ -303,7 +316,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(rows,[(self.uid,'session.login',str(self.uid)),(self.uid,'session.logout',str(self.uid))])
         self.assertEqual(db.execute('SELECT count(*) FROM sessions').fetchone()[0],0)
     finally:db.close()
- def test_revoked_administrator_cannot_create_camera_or_ftp_account(self):
+ def test_revoked_administrator_cannot_create_camera(self):
     from unittest.mock import patch
     cookie,csrf=self.login()
     real=self.app.json_body
@@ -322,7 +335,6 @@ class WebTests(unittest.TestCase):
             try:
                 with db:db.execute("UPDATE users SET role='admin' WHERE id=?",(self.uid,))
                 self.assertEqual(db.execute('SELECT count(*) FROM cameras').fetchone()[0],0)
-                self.assertEqual(db.execute('SELECT count(*) FROM ftp_accounts').fetchone()[0],0)
             finally:db.close()
  def test_origin_is_normalized_like_browser_origin(self):
     self.app=Application(self.file,self.root,self.exports,allowed_origin='https://NVR.Example:443',archive_lock=self.file.parent/'archive.lock')
@@ -844,7 +856,7 @@ class WebTests(unittest.TestCase):
     self.assertEqual(camera['accounts'],[])
     self.assertEqual(camera['onvif'],call(f'/api/cameras/{cid}/onvif'))
     self.assertEqual(camera['recording'],call(f'/api/cameras/{cid}')['recording'])
-    for secret in ('camera-secret','ftp-secret-password','viewer-secret-password','onvif-secret','password_hash','main_url'):
+    for secret in ('camera-secret','unused-secret-password','viewer-secret-password','onvif-secret','password_hash','main_url'):
         self.assertNotIn(secret,json.dumps(inventory))
     self.assertEqual(self.call('/api/admin/inventory')[0]['status'],'401 Unauthorized')
     r,_=self.call('/api/login','POST',{'username':'viewer','password':'viewer-secret-password'})
@@ -1271,7 +1283,7 @@ class WebTests(unittest.TestCase):
  def test_enabling_home_assistant_sends_current_faults_only_once(self):
     import time
     cookie,csrf=self.login()
-    _,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x','record_mode':'ftp'},cookie,csrf);cid=json.loads(body)['id']
+    _,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x','record_mode':'rtsp'},cookie,csrf);cid=json.loads(body)['id']
     db=database.open_db(self.file)
     with db:
         db.execute('UPDATE camera_details SET onvif_url=?,clock_checked=? WHERE camera_id=?',('http://192.0.2.1/onvif',int(time.time()),cid))

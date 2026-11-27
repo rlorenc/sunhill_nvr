@@ -73,7 +73,7 @@ def run(config,db,*,automatic,should_stop):
     def progress(report):
         nonlocal next_recent
         update(db,ident,**asdict(report))
-        # A large historical import must not starve normal FTP indexing.
+        # A large historical import must not starve normal recording indexing.
         # RTSP segments still enter via index_published independently.
         if time.monotonic()>=next_recent and not stop():
             try:workers.index_once(config,db,full=False,should_stop=stop)

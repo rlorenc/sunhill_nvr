@@ -218,7 +218,7 @@ def run_one(db: sqlite3.Connection, archive_root: Path, export_root: Path, *,
             archive_lock: Path, minimum_free: int=10_000_000_000, free=None, mount_guard=None) -> int | None:
     """Process one export while retaining a shared archive lock and bounded FDs.
 
-    Retention must use the same lock path in exclusive mode. Recorders and FTP
+    Retention must use the same lock path in exclusive mode. Recorders and other
     workers additionally coordinate writes; input identity is checked after use.
     """
     mount_guard=mount_guard or (lambda:True)

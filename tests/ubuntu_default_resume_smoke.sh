@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Real default-storage installation and interrupted 0.2.8 repair. Disposable VM only.
+# Real default-storage RTSP installation. Disposable VM only.
 set -euo pipefail
 umask 077
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && -n ${RUNNER_TEMP:-} ]] || { echo 'Disposable GitHub-hosted VM required.' >&2; exit 1; }
 . /etc/os-release
 [[ $ID == ubuntu && $VERSION_ID == 26.04 ]] || { echo 'Ubuntu 26.04 required.' >&2; exit 1; }
-[[ $# == 1 && ( $1 == clean || $1 == resume ) ]] || { echo 'Use clean or resume.' >&2; exit 1; }
+[[ $# == 1 && $1 == clean ]] || { echo 'Use clean.' >&2; exit 1; }
 [[ ! -e /opt/sunhill-nvr && ! -e /etc/sunhill-nvr && ! -e /var/lib/sunhill-nvr ]] || { echo 'Existing Sunhill installation detected.' >&2; exit 1; }
 mode=$1
 host=nvr.example.com
@@ -15,53 +15,9 @@ logs=$(mktemp -d "$RUNNER_TEMP/sunhill-default-${mode}.XXXXXXXX")
 root=/opt/sunhill-nvr
 # Do not print the disposable installation's setup token in CI logs.
 show_log() { sed '/One-time setup code/c\One-time setup code: [redacted]' "$1" >&2; }
-if [[ $mode == resume ]]; then
-    # Immutable source snapshot, independent of a rewritten public Git history.
-    fixture="$package/tests/fixtures/sunhill-0.2.8-resume.tar.gz"
-    printf '%s  %s\n' '243aa331cd8ef6f1058e40b23fefe24a0b522720d92677ab5593a5f382eb5a6d' "$fixture" | sha256sum --check
-    tar -xzf "$fixture" -C "$logs"
-    # Deterministically interrupt the genuine old installer just before the
-    # first controller startup, after config, DB and units are published.
-    python3 - "$logs/previous/install.sh" <<'PYFIXTURE'
-from pathlib import Path
-import sys
-p=Path(sys.argv[1]);s=p.read_text();needle='if ! systemctl start sunhill-controller.service; then'
-assert s.count(needle)==1
-p.write_text(s.replace(needle, 'echo "CI controlled interruption before first controller start" >&2\nexit 73\n'+needle))
-PYFIXTURE
-    if (cd "$logs/previous" && sudo bash install.sh nvr.example.com) >"$logs/old-install.log" 2>&1; then
-        echo 'Expected controlled interruption was not reproduced.' >&2; exit 1
-    fi
-    grep -q 'CI controlled interruption before first controller start' "$logs/old-install.log" || { show_log "$logs/old-install.log"; exit 1; }
-    [[ $(sudo readlink "$root/current") == releases/0.2.8 ]]
-    # Add a unique test-only DB sentinel under the real service identity. The
-    # resume must retain the existing database and marker, not reinitialize it.
-    sudo -u sunhill /usr/bin/python3 - "$root/data/sunhill.sqlite" <<'PY'
-import sqlite3,sys
-with sqlite3.connect(sys.argv[1]) as db:
-    db.execute('INSERT INTO system_settings(key,value) VALUES(?,?)',('ci_resume_sentinel','preserve-existing-database'))
-PY
-    sudo sha256sum "$root/config/config.json" "$root/media/kamery/.sunhill-volume-id" > "$logs/before.sha256"
-    git clone "$package/sunhill-nvr-history.bundle" "$logs/legacy-src"
-    git -C "$logs/legacy-src" checkout -B main c938e02de9eaa38017bad32d124bbc42015e71e8
-    (cd "$logs/legacy-src" && python3 scripts/package_release.py --candidate "$logs/sunhill-nvr-1.1.3.tar.gz")
-    tar -xzf "$logs/sunhill-nvr-1.1.3.tar.gz" -C "$logs"
-    if ! (cd "$logs/sunhill-nvr-1.1.3" && sudo bash install.sh --resume) > "$logs/resume.log" 2>&1; then show_log "$logs/resume.log"; exit 1; fi
-    if ! sudo bash install.sh --update --rtsp-only > "$logs/install.log" 2>&1; then show_log "$logs/install.log"; exit 1; fi
-    sudo sha256sum --check "$logs/before.sha256"
-    sudo -u sunhill /usr/bin/python3 - "$root/data/sunhill.sqlite" <<'PY'
-import sqlite3,sys
-with sqlite3.connect(sys.argv[1]) as db:
-    if db.execute("SELECT value FROM system_settings WHERE key='ci_resume_sentinel'").fetchone() != ('preserve-existing-database',):
-        raise SystemExit('Resume lost the existing DB sentinel')
-    if db.execute('PRAGMA quick_check').fetchone() != ('ok',):
-        raise SystemExit('Resume left a corrupted database')
-PY
-else
-    # Exercise the documented zero-argument installation, including local TLS.
-    host=nvr.local
-    if ! sudo bash install.sh </dev/null > "$logs/install.log" 2>&1; then show_log "$logs/install.log"; exit 1; fi
-fi
+# Exercise the documented zero-argument installation, including local TLS.
+host=nvr.local
+if ! sudo bash install.sh </dev/null > "$logs/install.log" 2>&1; then show_log "$logs/install.log"; exit 1; fi
 [[ $(sudo readlink "$root/current") == "releases/$version" ]]
 [[ $(sudo stat -c %a "$root") == 755 ]]
 sudo -u sunhill test -w "$root/media/kamery"
@@ -73,7 +29,7 @@ sudo -u sunhill test -r "$root/data/sunhill.sqlite"
 import sqlite3,sys
 with sqlite3.connect(sys.argv[1]) as db:
     assert db.execute("SELECT value FROM system_settings WHERE key='recording_transport'").fetchone()==('rtsp-only',)
-    assert db.execute('SELECT COUNT(*) FROM ftp_accounts').fetchone()==(0,)
+    assert not db.execute("SELECT name FROM sqlite_master WHERE name IN ('ftp_accounts','camera_ftp_accounts')").fetchall()
 PYRTSP
 # Check the port 80 vhost even when the Ubuntu welcome site is enabled.
 /usr/bin/python3 - "$host" <<'PYCODE'

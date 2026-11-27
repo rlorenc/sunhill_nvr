@@ -22,14 +22,15 @@ MAX_SECONDS=120
 
 
 def audio_track(sdp,base,ip,port):
-    sections=[];current=None
+    sections=[];current=None;session_attrs=[]
     for line in sdp.decode('utf-8').splitlines():
         if line.startswith('m='):
             current=(line[2:].split(),[]);sections.append(current)
-        elif current is not None and line.startswith('a='):current[1].append(line[2:].strip())
+        elif line.startswith('a='):
+            (current[1] if current is not None else session_attrs).append(line[2:].strip())
     choices=[]
     for media,attrs in sections:
-        if len(media)<4 or media[0]!='audio' or media[2].upper() not in ('RTP/AVP','RTP/AVP/TCP') or 'sendonly' not in attrs:continue
+        if len(media)<4 or media[0]!='audio' or media[2].upper() not in ('RTP/AVP','RTP/AVP/TCP') or next((a for a in attrs if a in ('sendonly','recvonly','sendrecv','inactive')),next((a for a in session_attrs if a in ('sendonly','recvonly','sendrecv','inactive')),None))!='sendonly':continue
         control=next((v[8:] for v in attrs if v.startswith('control:')),None)
         if not control or control=='*':continue
         payloads={int(x) for x in media[3:] if re.fullmatch(r'\d{1,3}',x) and int(x)<=127}
@@ -103,7 +104,11 @@ def authorize(path,token,slug):
             if not user or user[2]!='admin':return None
             row=db.execute('SELECT c.id,d.main_url FROM cameras c JOIN camera_details d ON d.camera_id=c.id WHERE c.slug=? AND c.enabled=1',(slug,)).fetchone()
             if not row or not security.may_access(db,user,row[0],live=True):return None
-            rtsp.endpoint(row[1]);return row
+            from . import device_diagnosis
+            target=db.execute(device_diagnosis.TARGET_SQL,(row[0],)).fetchone()
+            saved=device_diagnosis.cached(db,row[0],target) if target else None
+            url=target[5] if saved and saved.get('talkback_stream')==1 and target[5] else row[1]
+            rtsp.endpoint(url);return row[0],url,(saved or {}).get('talkback_transport','onvif')
     except (OSError,ValueError):return None
 
 
@@ -137,7 +142,11 @@ async def handle(reader,writer,*,origin,authorize_fn,active,semaphore,client_fac
         active.add(identity[0]);reserved=True
         accept=base64.b64encode(hashlib.sha1((key+live_proxy.GUID).encode('ascii')).digest()).decode('ascii')
         writer.write(('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n').encode('ascii'));await writer.drain();accepted=True
-        camera=client_factory(identity[1]);await asyncio.to_thread(camera.__enter__);await asyncio.to_thread(camera.start)
+        if len(identity)>2 and identity[2]=='baichuan' and client_factory is Backchannel:
+            from .reolink_talk import NativeBackchannel
+            camera=NativeBackchannel(identity[1])
+        else:camera=client_factory(identity[1])
+        await asyncio.to_thread(camera.__enter__);await asyncio.to_thread(camera.start)
         if await asyncio.to_thread(authorize_fn,token,slug)!=identity:raise ValueError('Talkback revoked')
         writer.write(server_frame(1,b'ready'));await writer.drain()
         start=time.monotonic();last_check=start;last_ping=start;next_audio=start

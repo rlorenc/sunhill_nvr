@@ -85,7 +85,7 @@ class NginxHttpIntegrationTests(unittest.TestCase):
                 viewer=security.create_user(db,'viewer','viewer-password-for-test','viewer')
                 with db:
                     db.execute("INSERT INTO cameras VALUES(1,'cam','Camera',1)")
-                    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://private:secret@camera/live','ftp')")
+                    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://private:secret@camera/live','rtsp')")
                     db.execute('INSERT INTO camera_permissions VALUES(?,?,?)',(viewer,1,0))
             app=Application(dbfile,storage,exports,allowed_origin='https://nvr.example',archive_lock=root/'archive.lock',trust_client_header=True)
             server=make_server('127.0.0.1',0,app,handler_class=QuietHandler)

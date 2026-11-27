@@ -31,7 +31,7 @@ def _initialize(config, credentials: tuple[str,str] | None) -> str | None:
     try:
         with contextlib.closing(database.open_db(temporary)) as db:
             security.initialize(db);database.migrate(db);archive.initialize(db);jobs.initialize(db)
-            database.retire_ftp(db,now=int(time.time()))
+            database.mark_rtsp(db)
             if credentials is not None:security.complete_console_setup(db,*credentials)
             with db:
                 db.executemany('INSERT INTO system_settings(key,value) VALUES (?,?)',
@@ -61,7 +61,7 @@ def migrate_database(config, *, rtsp_only: bool=False) -> None:
         if not result or result[0]!='ok':raise RuntimeError('database integrity check failed')
         if db.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('database foreign key check failed')
         security.initialize(db);archive.initialize(db);jobs.initialize(db);database.migrate(db)
-        database.retire_ftp(db,now=int(time.time()))
+        database.mark_rtsp(db)
         # Preserve existing external mount location, or learn it from the
         # currently accessible archive. Never bind the database to its UUID.
         from .storage_paths import required_location,remember_location
@@ -77,9 +77,9 @@ def migrate_database(config, *, rtsp_only: bool=False) -> None:
         if db.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('database foreign key check failed')
 
 def verify_rtsp_recorders(db, *, probe):
-    """Do not retire FTP while an enabled recording camera has no video."""
+    """Verify enabled recording cameras have video."""
     from concurrent.futures import ThreadPoolExecutor
-    rows=db.execute("SELECT c.slug FROM cameras c JOIN camera_details d ON d.camera_id=c.id WHERE c.enabled=1 AND d.record_mode IN ('rtsp','ftp') ORDER BY c.slug").fetchall()
+    rows=db.execute("SELECT c.slug FROM cameras c JOIN camera_details d ON d.camera_id=c.id WHERE c.enabled=1 AND d.record_mode='rtsp' ORDER BY c.slug").fetchall()
     slugs=[row[0] for row in rows]
     with ThreadPoolExecutor(max_workers=4) as pool:
         failed=[slug for slug,ok in zip(slugs,pool.map(probe,slugs)) if not ok]
@@ -196,7 +196,7 @@ def control_rtsp_once(config, service_user: str='sunhill') -> None:
     account=pwd.getpwnam(service_user)
     uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
     with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=10)) as db:
-        if not database.rtsp_only(db):raise RuntimeError('RTSP-only database migration required')
+        database.require_recording_modes(db)
         controller.reconcile_gateway(db,config.control_state,account.pw_gid)
 
 

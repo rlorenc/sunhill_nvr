@@ -38,7 +38,7 @@ class PortPreflightTests(unittest.TestCase):
             root = Path(name)
             (root / 'tcp').write_text(HEADER + row(21), encoding='ascii')
             (root / 'tcp6').write_text(HEADER + row(1984, address='0' * 32), encoding='ascii')
-            with self.assertRaisesRegex(ValueError, r'21 \(FTP\).*1984 \(go2rtc\)'):
+            with self.assertRaisesRegex(ValueError, r'1984 \(go2rtc\)'):
                 require_ports_free(root)
 
     def test_audio_backchannel_port_is_required(self):
@@ -49,7 +49,7 @@ class PortPreflightTests(unittest.TestCase):
     def test_missing_ipv6_table_and_unrelated_ports_are_allowed(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
-            (root / 'tcp').write_text(HEADER + row(443), encoding='ascii')
+            (root / 'tcp').write_text(HEADER + row(443) + row(21), encoding='ascii')
             require_ports_free(root)
 
     def test_http_port_always_required_https_only_when_requested(self):

@@ -908,7 +908,7 @@ class Application:
             cid=int(match.group(1))
             extended=match.group(2)=='settings'
             if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
-            row=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
+            row=db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()
             if not row:raise APIError('404 Not Found','Kamera niedostępna')
             if method=='POST':
                 try:
@@ -1245,13 +1245,13 @@ class Application:
                 raw=params.get('camera',[''])[0];cid=int(raw) if raw else None
                 if cid is not None and not 1<=cid<=9999999999:raise ValueError()
                 kind=params.get('type',[''])[0]
-                if kind and kind not in camera_events.TYPES+object_analytics.RULE_TYPES:raise ValueError()
+                if kind and kind not in camera_events.TYPES:raise ValueError()
                 cursor=archive_cursor(params.get('cursor',[None])[0],event=True)
             except (ValueError,OverflowError):raise APIError('400 Bad Request','Nieprawidłowy filtr zdarzeń')
             if cid is not None and not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
             rows=db.execute('''SELECT e.id,e.started_at,e.event_type,e.ended_at,e.source,e.zone,e.box_json,c.id,c.name
                 FROM event_markers e JOIN cameras c ON c.id=e.camera_id WHERE e.started_at>=? AND e.started_at<?
-                AND (? IS NULL OR c.id=?) AND (?='' OR e.event_type=?) AND (?='admin' OR EXISTS(SELECT 1 FROM camera_permissions p WHERE p.user_id=? AND p.camera_id=c.id))
+                AND e.event_type NOT IN ('package','line_cross','intrusion','abandoned') AND (? IS NULL OR c.id=?) AND (?='' OR e.event_type=?) AND (?='admin' OR EXISTS(SELECT 1 FROM camera_permissions p WHERE p.user_id=? AND p.camera_id=c.id))
                 AND (? IS NULL OR e.started_at<? OR (e.started_at=? AND e.id<?)) ORDER BY e.started_at DESC,e.id DESC LIMIT 201''',
                 (first,last,cid,cid,kind,kind,user[2],user[0],cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0)).fetchall()
             more=len(rows)>200;rows=rows[:200]
@@ -1275,7 +1275,7 @@ class Application:
                 first=int(datetime.combine(day,datetime.min.time(),tzinfo=zone).timestamp())
                 last=int(datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=zone).timestamp())
             except ValueError:raise APIError('400 Bad Request','Nieprawidłowa data')
-            rows=db.execute('SELECT id,started_at,event_type,ended_at,source,zone,box_json FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?',
+            rows=db.execute("SELECT id,started_at,event_type,ended_at,source,zone,box_json FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND event_type NOT IN ('package','line_cross','intrusion','abandoned') AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?",
                             (cid,first,last,cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0,ARCHIVE_PAGE_SIZE+1)).fetchall()
             more=len(rows)>ARCHIVE_PAGE_SIZE;rows=rows[:ARCHIVE_PAGE_SIZE]
             next_cursor=f'{rows[-1][1]}|{rows[-1][0]}' if more else None

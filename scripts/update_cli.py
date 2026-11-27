@@ -202,14 +202,23 @@ def ensure_analytics_dependencies(*,run=subprocess.run):
     if not ready():raise RuntimeError('Local analytics dependencies unavailable after installation')
 
 def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print,repair=False,rtsp_only=False):
-    if rtsp_only and not repair:raise ValueError("RTSP migration requires recovery preparation")
     old=active_version(root)
+    # New recording-only contract: do not attempt a conversion of old setups.
+    contract=source/'src/sunhill_nvr/lifecycle.py'
+    if contract.is_file() and 'RTSP_CONTRACT=1' in contract.read_text(encoding='utf-8'):
+        installed=root/'control/upgrade/lifecycle.json'
+        try:active=json.loads(installed.read_text(encoding='utf-8'))
+        except (OSError,ValueError) as exc:raise ValueError('A clean installation is required: no compatible lifecycle manifest') from exc
+        if not isinstance(active,dict) or active.get('version')!=2:raise ValueError('A clean installation is required: unsupported lifecycle')
+        pinned=root/'recovery/app/sunhill_nvr/lifecycle.py'
+        if not pinned.is_file() or 'RTSP_CONTRACT=1' not in pinned.read_text(encoding='utf-8'):
+            if not (source/'release-manifest.json').is_file():raise ValueError('Use the extracted current release to prepare its recovery manager')
+            emit('Preparing the current RTSP recovery manager before update.');repair=True
     before=media_paths(root)
     emit('Sunhill NVR Update');emit('Installed version: '+old)
     automatic=archive is None
     selected=discover(source,root,old) if automatic else trusted_package(Path(archive).absolute())
     if selected is None:
-        if rtsp_only:raise ValueError('RTSP migration requires a newer approved release package')
         if (root/'config/maintenance.flag').exists() or any((root/'control/upgrade'/name).exists() for name in ('transaction.json','domain-transaction.json','tls-transaction.json','storage-transaction.json')):
             raise RuntimeError('Pending maintenance or recovery; refusing to report success')
         emit('No newer local release found; remote releases are not checked.')
@@ -338,7 +347,6 @@ def main():
     if args==['--access']:access(ROOT);return 0
     if args==['--refresh-recovery']:return refresh_recovery(source,ROOT)
     if args==['--repair']:return update(source,ROOT,repair=True,emit=lambda message:print(message,flush=True))
-    if args==['--rtsp-only']:return update(source,ROOT,repair=True,rtsp_only=True,emit=lambda message:print(message,flush=True))
     if len(args)>1:raise ValueError('Usage: bash install.sh --update [RELEASE.tar.gz]')
     return update(source,ROOT,args[0] if args else None,emit=lambda message:print(message,flush=True))
 

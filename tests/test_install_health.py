@@ -36,9 +36,8 @@ class HealthTests(unittest.TestCase):
         check('nvr.example.com', run=run, opener=opener,
               readiness=lambda unit, timeout: probes.append((unit, timeout)) or True)
         self.assertEqual(calls, [('is-active',unit) for unit in SERVICES]+[('is-enabled',unit) for unit in BOOT_UNITS])
-        self.assertNotIn('sunhill-ftp.service',BOOT_UNITS)
         self.assertNotIn('sunhill-go2rtc.service',BOOT_UNITS)
-        self.assertEqual(probes, [('sunhill-go2rtc.service', 3), ('sunhill-ftp.service', 3)])
+        self.assertEqual(probes, [('sunhill-go2rtc.service', 3)])
         self.assertEqual(opener.requests[1].get_header('Host'), 'nvr.example.com')
 
     def test_running_but_disabled_service_is_rejected(self):
@@ -53,7 +52,7 @@ class HealthTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'sunhill-recorder.service'):
             check('nvr.example.com', run=bad, opener=Opener())
         ready = lambda unit, timeout: True
-        for failing in ('sunhill-go2rtc.service', 'sunhill-ftp.service'):
+        for failing in ('sunhill-go2rtc.service',):
             with self.subTest(service=failing), self.assertRaisesRegex(RuntimeError, failing):
                 check('nvr.example.com', run=good, opener=Opener(), readiness=lambda unit, timeout: unit != failing)
         with self.assertRaisesRegex(RuntimeError, 'application'):

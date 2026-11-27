@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 import time
 from .upgrade_system import SERVICES
-from . import monitor,database,lifecycle
+from . import monitor
 
 
 class MonitorError(RuntimeError):pass
@@ -16,7 +16,7 @@ def query(*, run=subprocess.run, monotonic=time.monotonic, budget: float=15, rts
     states={}
     deadline=monotonic()+budget
     try:
-        for service in (lifecycle.RTSP_ACTIVE if rtsp_only else SERVICES):
+        for service in SERVICES:
             remaining=deadline-monotonic()
             if remaining<=0:raise MonitorError('service state query timed out')
             result=run(['/usr/bin/systemctl','show','--property=ActiveState','--value',service],
@@ -41,10 +41,9 @@ def _monitor_status(db: sqlite3.Connection, available: bool, now: int) -> None:
 
 def check(db: sqlite3.Connection, *, now: int | None=None, inspect=None) -> None:
     now=int(time.time()) if now is None else now
-    rtsp_only=database.rtsp_only(db)
-    expected=lifecycle.RTSP_ACTIVE if rtsp_only else SERVICES
+    expected=SERVICES
     try:
-        states=query(rtsp_only=rtsp_only) if inspect is None else inspect()
+        states=query() if inspect is None else inspect()
         if set(states)!=set(expected) or any(s not in ('active','inactive','failed','activating','deactivating','reloading') for s in states.values()):
             raise MonitorError('incomplete service state')
     except (MonitorError,OSError):

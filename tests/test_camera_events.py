@@ -21,9 +21,14 @@ class EventsTests(unittest.TestCase):
         self.guard=patch('sunhill_nvr.workers.writes_permitted',return_value=True);self.guard.start();self.addCleanup(self.guard.stop);self.addCleanup(self.db.close)
     def test_parse_push_only_channel_zero_and_explicit_states(self):
         root=ET.fromstring('<body><AlarmEventList><AlarmEvent><channelId>1</channelId><AItype>face</AItype></AlarmEvent><AlarmEvent><channelId>0</channelId><status>MD,visitor</status><AItype>people,vehicle,dog_cat</AItype></AlarmEvent></AlarmEventList></body>')
-        self.assertEqual(e.parse_push(root),{'motion':True,'visitor':True,'tamper':False,'person':True,'vehicle':True,'animal':True,'face':False,'package':False})
+        self.assertEqual(e.parse_push(root),{'motion':True,'visitor':True,'tamper':False,'person':True,'vehicle':True,'animal':True,'face':False})
         self.assertEqual(e.parse_push(ET.fromstring('<body><AlarmEvent><channelId>0</channelId><AItype>none</AItype></AlarmEvent></body>'))['person'],False)
         self.assertEqual(e.parse_push(ET.fromstring('<body/>')), {})
+    def test_retired_package_is_not_recorded(self):
+        self.assertNotIn('package',e.TYPES)
+        self.assertEqual(e.parse_cgi({'package':{'support':1,'alarm_state':1}}),{})
+        e.snapshot(self.db,1,URL,{'package':True},'cgi',100)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM event_markers').fetchone(),(0,))
     def test_parse_cgi_support_and_off(self):
         self.assertEqual(e.parse_cgi({'channel':0,'people':{'support':1,'alarm_state':1},'vehicle':{'support':1,'alarm_state':0},'dog_cat':{'support':0,'alarm_state':1}}),{'person':True,'vehicle':False})
         self.assertEqual(e.parse_cgi({'channel':1,'people':{'support':1,'alarm_state':1}}),{})

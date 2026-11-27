@@ -4,14 +4,7 @@ umask 077
 export PYTHONDONTWRITEBYTECODE=1
 
 if [[ ${EUID} -ne 0 ]]; then printf '%s\n' 'Run as root.' >&2; exit 1; fi
-if [[ "${1:-}" == --resume ]]; then
-    if [[ $# -ne 1 ]]; then printf '%s\n' 'Usage: bash install.sh --resume' >&2; exit 1; fi
-    echo "Interrupted 0.2.x installation: use the 1.1.3 package --resume, then upgrade using --update --rtsp-only." >&2
-    exit 1
-fi
 check_only=0
-# Reject the removed legacy installation mode.
-[[ "${SUNHILL_LEGACY_FTP:-0}" == 0 ]] || { echo "Legacy FTP installation is not supported" >&2; exit 1; }
 retry_incomplete=0
 if [[ "${1:-}" == --check ]]; then check_only=1; shift; fi
 if [[ "${1:-}" == --retry-incomplete ]]; then retry_incomplete=1; shift; fi

@@ -306,10 +306,10 @@ with tempfile.TemporaryDirectory() as temporary:
     install_update(broken,next_versions[2],directory,expected_failure=True)
     after=request('/api/admin/inventory')
     if [(c['id'],c['name']) for c in before['cameras']]!=[(c['id'],c['name']) for c in after['cameras']]:raise RuntimeError('rollback did not restore camera configuration')
-    if before['users']!=after['users'] or before['accounts']!=after['accounts']:raise RuntimeError('rollback did not restore account configuration')
+    if before['users']!=after['users']:raise RuntimeError('rollback did not restore account configuration')
     if request('/api/recordings/'+str(recorded['id'])+'/file')!=before_media:raise RuntimeError('rollback changed recording content')
 
-# Seven archive layouts, using synthetic fixture files (real RTSP migration is tested separately).
+# Seven archive layouts, using synthetic fixture files.
 slugs=('brama','brama2','drzwi','parking','podworko','podworko2','skoda')
 existing={item['slug']:item['id'] for item in request('/api/cameras')['cameras']}
 camera_ids={}

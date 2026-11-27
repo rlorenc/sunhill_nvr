@@ -6,8 +6,10 @@ LIMIT = 1000
 
 
 def validate(data):
-    if not isinstance(data, dict) or set(data) != {'layout_id', 'order', 'sizes'}:
+    if not isinstance(data, dict) or not {'layout_id', 'order', 'sizes'} <= set(data) <= {'layout_id', 'order', 'sizes', 'detection_boxes'}:
         raise ValueError('Nieprawidłowy układ podglądu')
+    if 'detection_boxes' in data and type(data['detection_boxes']) is not bool:
+        raise ValueError('Nieprawidłowa widoczność ramek detekcji')
     lid, order, sizes = data['layout_id'], data['order'], data['sizes']
     def identifier(value):
         return type(value) is int and 0 < value <= 9999999999
@@ -35,7 +37,10 @@ def accessible(db, user, data):
         lid = None
     order = [cid for cid in data['order'] if may_access(db, user, cid)]
     keys = {str(cid) for cid in order}
-    return {'layout_id': lid, 'order': order, 'sizes': {key: size for key, size in data['sizes'].items() if key in keys}}
+    state = {'layout_id': lid, 'order': order, 'sizes': {key: size for key, size in data['sizes'].items() if key in keys}}
+    if 'detection_boxes' in data:
+        state['detection_boxes'] = data['detection_boxes']
+    return state
 
 
 def read(db, user):
@@ -50,5 +55,9 @@ def write(db, user, data):
     filtered = accessible(db, user, data)
     if filtered != data:
         raise PermissionError('Brak dostępu do kamery lub układu')
+    if 'detection_boxes' not in data:
+        previous = read(db, user) or {}
+        if 'detection_boxes' in previous:
+            data = {**data, 'detection_boxes': previous['detection_boxes']}
     db.execute('INSERT INTO live_workspaces(user_id,state_json) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET state_json=excluded.state_json',
                (user[0], json.dumps(data, separators=(',', ':'))))

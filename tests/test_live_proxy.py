@@ -11,7 +11,7 @@ class LiveProxyTests(unittest.IsolatedAsyncioTestCase):
     uid=security.create_user(db,'viewer','viewer-test-password','viewer')
     with db:
         db.execute("INSERT INTO cameras VALUES(1,'cam','Camera',1)")
-        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://camera','ftp')")
+        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://camera','rtsp')")
         db.execute('INSERT INTO camera_permissions VALUES(?,1,0)',(uid,))
     self.token=security.authenticate(db,'viewer','viewer-test-password','client').token;db.close()
     self.upstream_count=0
@@ -86,7 +86,7 @@ class LiveProxyTests(unittest.IsolatedAsyncioTestCase):
     with db:
         db.execute("UPDATE camera_details SET sub_url='rtsp://camera/sub' WHERE camera_id=1")
         db.execute("INSERT INTO cameras VALUES(2,'cam_sub','Other',1)")
-        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(2,'rtsp://other','ftp')")
+        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(2,'rtsp://other','rtsp')")
     db.close()
     self.assertFalse(live_proxy.authorize(self.dbfile,self.token,'cam_sub'))
     self.assertTrue(live_proxy.authorize(self.dbfile,self.token,'cam'))

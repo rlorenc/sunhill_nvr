@@ -11,19 +11,9 @@ CREATE TABLE system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE camera_details (
  camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE,
  main_url TEXT NOT NULL, sub_url TEXT,
- record_mode TEXT NOT NULL CHECK(record_mode IN ('ftp','rtsp','none')),
+ record_mode TEXT NOT NULL CHECK(record_mode IN ('rtsp','none')),
  last_file_at INTEGER, last_error TEXT, recording_since INTEGER NOT NULL DEFAULT 0,
  onvif_url TEXT, onvif_username TEXT, onvif_password TEXT, clock_offset REAL, clock_checked INTEGER, clock_error TEXT
-);
-CREATE TABLE ftp_accounts (
- id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
- password_hash TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
- home_camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE
-);
-CREATE TABLE camera_ftp_accounts (
- camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
- ftp_account_id INTEGER NOT NULL REFERENCES ftp_accounts(id) ON DELETE RESTRICT,
- PRIMARY KEY(camera_id,ftp_account_id)
 );
 CREATE TABLE protected_files (
  relative_path TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '',
@@ -241,21 +231,13 @@ def rtsp_only(db: sqlite3.Connection) -> bool:
     return row is not None and row[0]=='rtsp-only'
 
 
-def retire_ftp(db: sqlite3.Connection, *, now: int) -> int:
-    """Run only with writers stopped and a verified database backup available.
 
-    Archive paths, indexes, user settings and camera identities are unchanged.
-    FTP accounts and mappings are retired; rollback restores them from backup.
-    """
-    from .cameras import validate_rtsp
+def require_recording_modes(db: sqlite3.Connection) -> None:
+    """Reject unsupported historical recording modes without converting them."""
+    if db.execute("SELECT 1 FROM camera_details WHERE record_mode NOT IN ('rtsp','none') LIMIT 1").fetchone():
+        raise RuntimeError('unsupported recording mode; a clean installation is required')
+
+def mark_rtsp(db: sqlite3.Connection) -> None:
+    require_recording_modes(db)
     with db:
-        db.execute('BEGIN IMMEDIATE')
-        rows=db.execute("SELECT main_url FROM camera_details WHERE record_mode='ftp'").fetchall()
-        for (url,) in rows:validate_rtsp(url)
-        count=db.execute("UPDATE camera_details SET record_mode='rtsp',recording_since=? WHERE record_mode='ftp'",(now,)).rowcount
-        db.execute('DELETE FROM camera_ftp_accounts')
-        db.execute('DELETE FROM ftp_accounts')
-        db.execute("DELETE FROM service_health WHERE name IN ('sunhill-ftp.service','sunhill-ftp-policy.service')")
-        db.execute("DELETE FROM pending_notifications WHERE camera_id IS NULL AND source IN ('sunhill-ftp.service','sunhill-ftp-policy.service') AND state IN ('service_down','service_up')")
         db.execute("INSERT INTO system_settings(key,value) VALUES('recording_transport','rtsp-only') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-    return count

@@ -33,7 +33,7 @@ class HttpArchiveIntegrationTests(unittest.TestCase):
             security.create_user(db,'admin','long-test-password','admin')
             with db:
                 db.execute("INSERT INTO cameras VALUES(1,'brama','Brama',1)")
-                db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://camera/live','ftp')")
+                db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://camera/live','rtsp')")
             for second,color in [(0,'red'),(1,'blue')]:
                 file=archive_root/f'brama/2026/11/21/19090{second}.mp4';file.parent.mkdir(parents=True,exist_ok=True)
                 subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i',f'color=c={color}:s=160x90:r=25:d=1',

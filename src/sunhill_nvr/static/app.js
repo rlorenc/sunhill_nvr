@@ -67,9 +67,19 @@ const livePreferences = new Map();
 let liveLayoutEditing=false,liveLayoutOrder=[],liveLayoutGesture=null;
 const liveLayoutSizes=new Map();
 let workspaceOwner=null,workspaceReady=false,workspacePending=null,workspaceSavePromise=null;
+let detectionBoxesVisible=true;
+function renderDetectionBoxes(){
+  $('application').classList.toggle('hide-detection-boxes',!detectionBoxesVisible);
+  for(const id of ['live-detection-boxes','archive-detection-boxes']){
+    const button=$(id);button.textContent=detectionBoxesVisible?'Ukryj ramki AI':'Pokaż ramki AI';
+    button.setAttribute('aria-pressed',String(detectionBoxesVisible));button.disabled=!workspaceReady;
+  }
+}
+function toggleDetectionBoxes(){if(!workspaceReady||!me||me.id!==workspaceOwner)return;detectionBoxesVisible=!detectionBoxesVisible;renderDetectionBoxes();queueLiveWorkspace();}
+for(const id of ['live-detection-boxes','archive-detection-boxes'])$(id)?.addEventListener('click',toggleDetectionBoxes);
 function queueLiveWorkspace(){
   if(!workspaceReady||typeof me==='undefined'||me?.id!==workspaceOwner)return;
-  workspacePending={layout_id:Number($('layout-select').value)||null,order:liveLayoutOrder.map(Number),sizes:Object.fromEntries(liveLayoutSizes)};
+  workspacePending={layout_id:Number($('layout-select').value)||null,order:liveLayoutOrder.map(Number),sizes:Object.fromEntries(liveLayoutSizes),detection_boxes:detectionBoxesVisible};
   void flushLiveWorkspace();
 }
 async function flushLiveWorkspace(){
@@ -87,11 +97,11 @@ async function flushLiveWorkspace(){
 }
 async function restoreLiveWorkspace(){
   if(!me||workspaceReady&&workspaceOwner===me.id)return;
-  const owner=me.id;workspaceOwner=owner;workspaceReady=false;workspacePending=null;liveLayoutOrder=[];liveLayoutSizes.clear();
+  const owner=me.id;workspaceOwner=owner;workspaceReady=false;workspacePending=null;liveLayoutOrder=[];liveLayoutSizes.clear();detectionBoxesVisible=true;renderDetectionBoxes();
   const result=await api('/api/live-workspace');if(me?.id!==owner)return;
   const state=result.workspace;
   if(state){liveLayoutOrder=state.order.map(String);for(const [id,size] of Object.entries(state.sizes))liveLayoutSizes.set(id,size);$('layout-select').value=state.layout_id==null?'':String(state.layout_id);}
-  reconcileLiveLayout();workspaceReady=true;
+  detectionBoxesVisible=state?.detection_boxes!==false;reconcileLiveLayout();workspaceReady=true;renderDetectionBoxes();
 }
 
 function liveGridMetrics(width,count){
@@ -489,7 +499,7 @@ function deviceControlPanel(camera){
     if(result.device?.protocol)identity.textContent+=' · '+result.device.protocol;
     else if(result.device?.identity_source)identity.textContent+=' · '+result.device.identity_source;
     refresh.hidden=false;
-    if(c.light_available===true&&typeof c.light!=='boolean')fields.append(button('Włącz reflektor','light',true),button('Wyłącz reflektor','light',false));
+    if(c.light_available===true&&typeof c.light!=='boolean')fields.append(element('p','Stan LED nieznany. Ponów diagnozę.','muted'));
     if(typeof c.light==='boolean')fields.append(button(c.light?'Wyłącz reflektor':'Włącz reflektor','light',!c.light));
     if(Number.isInteger(c.brightness))fields.append(range('Jasność reflektora (%)','brightness',{value:c.brightness,min:0,max:100}));
     if(c.ir&&Array.isArray(c.ir.options)&&c.ir.options.length){
@@ -521,12 +531,25 @@ function deviceControlPanel(camera){
 }
 function liveLightControl(camera){
   const panel=element('div',null,'live-light');panel.hidden=true;
-  let busy=false;const url='/api/cameras/'+camera.id+'/controls';
-  function render(result){const c=result.controls||{};panel.replaceChildren();panel.hidden=typeof c.light!=='boolean'&&c.light_available!==true;if(panel.hidden)return;
-    function add(label,value){const b=element('button',label);b.type='button';b.addEventListener('click',async()=>{if(busy)return;busy=true;for(const el of panel.querySelectorAll('button'))el.disabled=true;try{await api(url,'POST',{control:'light',value});invalidateDeviceInfo(camera);render(await loadDeviceInfo(camera,true));}catch(error){notify(error.message,'error');}finally{busy=false;for(const el of panel.querySelectorAll('button'))el.disabled=false;}});panel.append(b);}
-    if(typeof c.light==='boolean')add(c.light?'Wyłącz LED':'Włącz LED',!c.light);else{add('Włącz LED',true);add('Wyłącz LED',false);}
+  let busy=false,request=0;const url='/api/cameras/'+camera.id+'/controls';
+  function render(result){
+    const c=result.controls||{};panel.replaceChildren();panel.hidden=typeof c.light!=='boolean'&&c.light_available!==true;if(panel.hidden)return;
+    const known=typeof c.light==='boolean';const button=element('button',known?(c.light?'Wyłącz LED':'Włącz LED'):'Odczytaj stan LED');button.type='button';panel.append(button);
+    button.addEventListener('click',async()=>{
+      if(busy)return;
+      if(!known){await refresh();return;}
+      busy=true;request++;button.disabled=true;
+      try{await api(url,'POST',{control:'light',value:!c.light});invalidateDeviceInfo(camera);render(await loadDeviceInfo(camera,true));}
+      catch(error){render({controls:{light_available:true}});notify(error.message,'error');}
+      finally{busy=false;}
+    });
   }
-  loadDeviceInfo(camera).then(render,()=>{});return panel;
+  async function refresh(){
+    if(busy)return;const generation=++request;for(const b of panel.querySelectorAll('button'))b.disabled=true;
+    try{const result=await loadDeviceInfo(camera,true);if(generation===request)render(result);}
+    catch(error){if(generation===request&&!panel.hidden)render({controls:{light_available:true}});}
+  }
+  loadDeviceInfo(camera).then(result=>{if(!request)render(result);},()=>{});panel.refreshLight=refresh;return panel;
 }
 let activeTalkback=null;
 function stopTalkback(session=activeTalkback,message=''){
@@ -559,7 +582,7 @@ async function startTalkback(camera,button){
     socket.onerror=()=>stopTalkback(session,'Nie można otworzyć kanału głosowego kamery.');
     socket.onmessage=event=>{
       if(activeTalkback!==session)return;
-      if(event.data!=='ready'){stopTalkback(session,'Kamera nie udostępnia zgodnego kanału głosowego ONVIF G.711.');return;}
+      if(event.data!=='ready'){stopTalkback(session,'Nie udało się zestawić kanału głosowego kamery (ONVIF lub Reolink). Ponów diagnozę.');return;}
       if(session.processor)return;
       try{
         const source=context.createMediaStreamSource(stream),processor=context.createScriptProcessor(1024,1,1),silent=context.createGain();
@@ -702,7 +725,7 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     const volumeLabel=element('label','Głośność','live-volume');volumeLabel.hidden=!camera.enabled;volumeLabel.append(volume);actions.append(volumeLabel);
     volume.addEventListener('input',()=>{if(video?.video)video.video.volume=Number(volume.value);});
     const full=element('button','Pełny ekran');full.type='button';full.hidden=!camera.enabled;full.addEventListener('click',()=>{closeLiveMenu();const native=video?.video;if(document.fullscreenElement){document.exitFullscreen?.();}else if(card.requestFullscreen){card.requestFullscreen().catch(()=>{if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();else notify('Pełny ekran niedostępny.');});}else if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();});actions.append(full);
-    if(camera.enabled&&me&&me.role==='admin'){actions.append(liveLightControl(camera));const talk=element('button','Mów do kamery');talk.type='button';talk.hidden=true;loadDeviceInfo(camera).then(result=>{talk.hidden=result.talkback!==true;},()=>{});talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
+    if(camera.enabled&&me&&me.role==='admin'){const lightControl=liveLightControl(camera);actions.append(lightControl);menu.addEventListener('click',()=>{if(!actions.hidden&&!lightControl.hidden)void lightControl.refreshLight();});const talk=element('button','Mów do kamery');talk.type='button';talk.hidden=true;loadDeviceInfo(camera).then(result=>{talk.hidden=result.talkback!==true;},()=>{});talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
     actions.append(element('p',cameraHealthText(camera),'live-health-detail'),diagnostics);card.append(actions,audioPrompt);installLiveLayoutHandles(card,camera);area.append(card);
   }
   if(!visible.length){
@@ -841,7 +864,7 @@ async function loadArchive(autoStart=false) {
     // Events are optional metadata. Never delay the video for them or the calendar.
     $('archive-events-status').textContent='Wczytywanie zdarzeń…';
     void archivePages(`/api/cameras/${camera.id}/events?date=${encodeURIComponent(date)}`,'events',current).then(data=>{
-      if(!current())return;eventMarkers=data.events;renderTimeline();renderEvents();$('archive-events-status').textContent=eventMarkers.length?'':'Brak zdarzeń.';
+      if(!current())return;eventMarkers=data.events.filter(e=>!removedDetection(e.type));renderTimeline();renderEvents();$('archive-events-status').textContent=eventMarkers.length?'':'Brak zdarzeń.';
     }).catch(error=>{if(current())$('archive-events-status').textContent='Nie udało się pobrać zdarzeń: '+error.message;});
     return true;
   }catch(e){if(current()){$('archive-status').textContent=e.message;notify(e.message);}return false;}
@@ -1142,14 +1165,15 @@ function renderTimeline(){
   if(records.some(r=>r.utc_second))notify('Uwaga: część nagrań ma niejednoznaczną godzinę po zmianie czasu.');
 }
 function eventSeconds(timestamp){const pieces=new Intl.DateTimeFormat('en-GB',{timeZone:me.timezone,hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(timestamp*1000));const get=(type)=>Number(pieces.find(p=>p.type===type).value);return get('hour')*3600+get('minute')*60+get('second');}
-const eventLabels={motion:'Ruch',person:'Człowiek',vehicle:'Pojazd',animal:'Zwierzę',face:'Twarz',package:'Paczka',visitor:'Dzwonek',tamper:'Sabotaż'};
-function eventLabel(kind){return eventLabels[kind]||({line_cross:'Przekroczenie linii',intrusion:'Wtargnięcie',abandoned:'Pozostawiony przedmiot',plate:'Tablica',object:'Obiekt'})[kind]||kind;}
+const removedDetection=kind=>['package','line_cross','intrusion','abandoned'].includes(kind);
+const eventLabels={motion:'Ruch',person:'Człowiek',vehicle:'Pojazd',animal:'Zwierzę',face:'Twarz',plate:'Tablica rejestracyjna',visitor:'Dzwonek',tamper:'Sabotaż'};
+function eventLabel(kind){return eventLabels[kind]||({line_cross:'Przekroczenie linii',intrusion:'Wtargnięcie',abandoned:'Pozostawiony przedmiot',plate:'Tablica rejestracyjna',object:'Obiekt'})[kind]||kind;}
 function seekToEvent(event){
   const position=eventSeconds(event.timestamp),fold=event.fold===0||event.fold===1?String(event.fold):'';
   timelineRequestGeneration++;clearTimeout(previewTimer);$('timeline-preview').hidden=true;
   $('timeline-fold').value=fold;$('timeline-position').value=String(position);$('timeline-time').textContent=clock(position);rememberTimelineSelection(position);
   const index=records.findIndex(r=>!r.utc_second&&r.utc_first&&Date.parse(r.utc_first)/1000<=event.timestamp&&event.timestamp<Date.parse(r.utc_first)/1000+r.duration);
-  if(index>=0){if(event.box&&!eventMarkers.some(e=>e.id===event.id))eventMarkers=[...eventMarkers,event];playRecord(index,event.timestamp-Date.parse(records[index].utc_first)/1000);}else notify('Brak jednoznacznego nagrania dla tego zdarzenia.');
+  if(index>=0){if(!removedDetection(event.type)&&event.box&&!eventMarkers.some(e=>e.id===event.id))eventMarkers=[...eventMarkers,event];playRecord(index,event.timestamp-Date.parse(records[index].utc_first)/1000);}else notify('Brak jednoznacznego nagrania dla tego zdarzenia.');
 }
 function renderEvents(){
   const area=$('events');area.replaceChildren();const selected=$('event-filter').value;
@@ -1173,7 +1197,7 @@ function drawDetectionOverlay(video,instant){
   const scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight),w=video.videoWidth*scale,h=video.videoHeight*scale;
   const x=(video.clientWidth-w)/2,y=(video.clientHeight-h)/2;
   for(const e of observed){const [bx,by,bw,bh]=e.box;if(![bx,by,bw,bh].every(Number.isFinite)||bx<0||by<0||bw<=0||bh<=0||bx+bw>1.000001||by+bh>1.000001)continue;
-    const box=element('span',eventLabel(e.type),'detection-box');box.dataset.kind=e.type;box.style.left=(x+bx*w)+'px';box.style.top=(y+by*h)+'px';box.style.width=(bw*w)+'px';box.style.height=(bh*h)+'px';overlay.append(box);}
+    const box=element('span',null,'detection-box');box.dataset.kind=e.type;box.style.left=(x+bx*w)+'px';box.style.top=(y+by*h)+'px';box.style.width=(bw*w)+'px';box.style.height=(bh*h)+'px';overlay.append(box);}
   overlay.hidden=!overlay.children.length;
 }
 // Use only observed camera coordinates, never generated boxes. Keep trails session-local.
@@ -1183,8 +1207,8 @@ function paintNativeObjects(overlay,video,frame,tracks=null){
   const scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight),w=video.videoWidth*scale,h=video.videoHeight*scale,x=(video.clientWidth-w)/2,y=(video.clientHeight-h)/2;
   if(tracks&&tracks.session!==frame.session){tracks.session=frame.session;tracks.paths.clear();}
   const seen=new Set();
-  for(const obj of frame.objects||[]){const b=obj.box;if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite))continue;const [bx,by,bw,bh]=b;if(bx<0||by<0||bw<=0||bh<=0||bx+bw>1.000001||by+bh>1.000001)continue;
-    const box=element('span',(obj.label==='foreground_change'?'Zmiana obrazu':obj.label||eventLabel(obj.kind))+' #'+obj.id+(obj.plate_number?' · '+obj.plate_number:'')+(obj.face_match?' · możliwe dopasowanie: '+obj.face_match:''),'detection-box');box.dataset.kind=obj.kind;Object.assign(box.style,{left:(x+bx*w)+'px',top:(y+by*h)+'px',width:bw*w+'px',height:bh*h+'px'});overlay.append(box);seen.add(obj.id);
+  for(const obj of frame.objects||[]){if(removedDetection(obj.kind))continue;const b=obj.box;if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite))continue;const [bx,by,bw,bh]=b;if(bx<0||by<0||bw<=0||bh<=0||bx+bw>1.000001||by+bh>1.000001)continue;
+    const box=element('span',null,'detection-box');box.dataset.kind=obj.kind;Object.assign(box.style,{left:(x+bx*w)+'px',top:(y+by*h)+'px',width:bw*w+'px',height:bh*h+'px'});overlay.append(box);seen.add(obj.id);
     if(tracks){let path=tracks.paths.get(obj.id)||[];if(path.length&&frame.stamp_ms-path[path.length-1].t>3000)path=[];if(!path.length||path[path.length-1].t<frame.stamp_ms)path.push({t:frame.stamp_ms,x:bx+bw/2,y:by+bh/2});path=path.slice(-12);tracks.paths.set(obj.id,path);for(const point of path){const dot=element('span',null,'native-track-dot');dot.style.left=(x+point.x*w)+'px';dot.style.top=(y+point.y*h)+'px';overlay.append(dot);}}
   }
   if(tracks)for(const key of tracks.paths.keys())if(!seen.has(key))tracks.paths.delete(key);
@@ -1238,20 +1262,10 @@ function firmwareSettingsPanel(camera){
   panel.append(read,...fields.map(([,f])=>f.label),hash.label,targetVersion.label,file,send,status);return panel;
 }
 function metadataSettingsPanel(camera){
-  const panel=element('details');panel.append(element('summary','Metadane ONVIF, lokalna analiza i reguły przestrzenne'));const status=element('p'),fields=element('div');panel.append(status,fields);let loaded=false,busy=false;
+  const panel=element('details');panel.append(element('summary','Metadane ONVIF i lokalna analiza'));const status=element('p'),fields=element('div');panel.append(status,fields);let loaded=false,busy=false;
   const endpoint=`/api/cameras/${camera.id}/metadata-settings`;
-  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Analiza obiektów (ONVIF i lokalna)','inline');label.prepend(enabled);const sourceMode=element('select');sourceMode.add(new Option('Automatycznie: ONVIF, następnie lokalna analiza','auto'));sourceMode.add(new Option('Lokalna analiza (także dla kamer z ONVIF)','local'));sourceMode.value=cfg.source_mode||'auto';const sourceLabel=element('label','Źródło analizy');sourceLabel.append(sourceMode);fields.append(label,sourceLabel,element('p','Metadane są przechowywane wraz z dostępnymi nagraniami.'),element('p','Lokalnie wykrywa osoby, twarze i tablice. Opcjonalny lokalny model COCO rozszerza klasy obiektów. Profile twarzy wymagają osobnego, świadomego zapisania przez administratora oraz modeli YuNet/SFace. Dopasowania są orientacyjne. Zmiana obrazu jest heurystyką, nie klasyfikacją AI. Reguła pozostawionych przedmiotów wymaga obserwacji obiektu lub paczki i osoby.'));
-    let rules=cfg.rules||[],points=[],editing=null;const list=element('div'),stage=element('div',null,'zone-editor-stage'),image=element('img'),drawing=document.createElementNS('http://www.w3.org/2000/svg','svg');image.alt='Kadr referencyjny';image.hidden=true;drawing.setAttribute('viewBox','0 0 1000 1000');drawing.setAttribute('preserveAspectRatio','none');stage.append(image,drawing);
-    const name=labeledInput('Nazwa reguły','text',''),type=element('select'),kind=element('select'),direction=element('select'),dwell=labeledInput('Czas przebywania / bezruchu (s)','number',0);dwell.input.min='0';dwell.input.max='600';for(const k of ['line_cross','intrusion','abandoned'])type.add(new Option(eventLabel(k),k));for(const k of ['all','person','vehicle','animal','face','plate','package','object'])kind.add(new Option(k==='all'?'Wszystkie':eventLabel(k),k));for(const [k,title] of [['both','Oba kierunki'],['positive','Ujemna → dodatnia strona'],['negative','Dodatnia → ujemna strona']])direction.add(new Option(title,k));
-    function labelFor(title,input){const l=element('label',title);l.append(input);return l;}
-    function paint(){drawing.replaceChildren();if(points.length){const poly=document.createElementNS(drawing.namespaceURI,type.value==='line_cross'||points.length<3?'polyline':'polygon');poly.setAttribute('points',points.map(p=>p.map(n=>Math.round(n*1000)).join(',')).join(' '));poly.setAttribute('fill',type.value==='line_cross'?'none':'#38a6ff33');poly.setAttribute('stroke','#38a6ff');poly.setAttribute('stroke-width','4');drawing.append(poly);for(const p of points){const dot=document.createElementNS(drawing.namespaceURI,'circle');dot.setAttribute('cx',p[0]*1000);dot.setAttribute('cy',p[1]*1000);dot.setAttribute('r','8');dot.setAttribute('fill','#fff');drawing.append(dot);}}}
-    function refreshList(){list.replaceChildren();for(const rule of rules){const row=element('div',null,'inline');const edit=element('button',rule.name+' - '+eventLabel(rule.type));edit.type='button';edit.onclick=()=>{editing=rule.id;name.input.value=rule.name;type.value=rule.type;kind.value=rule.kind;direction.value=rule.direction;dwell.input.value=rule.dwell;points=rule.points.map(p=>p.slice());paint();};const remove=element('button','Usuń');remove.type='button';remove.onclick=()=>{rules=rules.filter(r=>r.id!==rule.id);if(editing===rule.id){editing=null;points=[];paint();}refreshList();};row.append(edit,remove);list.append(row);}}
-    stage.addEventListener('click',ev=>{const r=stage.getBoundingClientRect();if(!r.width||!r.height||points.length>=(type.value==='line_cross'?2:32))return;points.push([Math.max(0,Math.min(1,(ev.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(ev.clientY-r.top)/r.height))].map(v=>Math.round(v*10000)/10000));paint();});
-    type.onchange=()=>{points=[];if(type.value==='abandoned'){kind.value='package';dwell.input.value=30;}paint();};const clear=element('button','Wyczyść punkty');clear.type='button';clear.onclick=()=>{points=[];paint();};const undo=element('button','Cofnij punkt');undo.type='button';undo.onclick=()=>{points.pop();paint();};
-    const frame=element('button','Pobierz kadr z dzisiejszego archiwum');frame.type='button';frame.onclick=async()=>{frame.disabled=true;try{const data=await api(`/api/cameras/${camera.id}/recordings?date=${encodeURIComponent(cameraDay())}`);const last=data.recordings?.at(-1);if(!last)throw new Error('Brak nagrań dzisiaj.');image.onload=()=>{stage.style.aspectRatio=`${image.naturalWidth}/${image.naturalHeight}`;image.hidden=false;};image.onerror=()=>{image.hidden=true;status.textContent='Nie udało się odczytać kadru.';};image.src=`/api/recordings/${last.id}/frame?offset=0`;}catch(error){status.textContent=error.message;}finally{frame.disabled=false;}};
-    const add=element('button','Dodaj / zmień regułę');add.type='button';add.onclick=()=>{if(!name.input.value.trim()||(type.value==='line_cross'?points.length!==2:points.length<3)||(!editing&&rules.length>=16)){status.textContent='Podaj nazwę i poprawną geometrię (2 punkty linii lub min. 3 punkty strefy).';return;}const id=editing||('r'+Array.from(crypto.getRandomValues(new Uint8Array(8)),x=>x.toString(16).padStart(2,'0')).join(''));rules=rules.filter(r=>r.id!==id);rules.push({id,name:name.input.value.trim(),type:type.value,points:points.slice(),kind:kind.value,direction:direction.value,dwell:Number(dwell.input.value)});editing=null;points=[];name.input.value='';paint();refreshList();status.textContent='Reguła w formularzu. Zapisz wszystkie ustawienia.';};
-    const save=element('button','Zapisz wszystkie ustawienia');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api(endpoint,'PATCH',{enabled:enabled.checked,rules,source_mode:sourceMode.value});status.textContent='Zapisano. Stan: '+(result.status?.state||'oczekiwanie');}catch(error){status.textContent=error.message;}finally{save.disabled=false;}};
-    fields.append(list,name.label,labelFor('Typ',type),labelFor('Obiekt',kind),labelFor('Kierunek linii',direction),dwell.label,frame,element('p','Klikaj w kadrze, aby dodać kolejne wierzchołki; bez kadru dostępna jest siatka referencyjna.'),stage,undo,clear,add,save);refreshList();status.textContent='Stan: '+(cfg.status?.state||(cfg.enabled?'oczekiwanie':'wyłączone'));loaded=true;
+  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Analiza obiektów (ONVIF i lokalna)','inline');label.prepend(enabled);const sourceMode=element('select');sourceMode.add(new Option('Automatycznie: ONVIF, następnie lokalna analiza','auto'));sourceMode.add(new Option('Lokalna analiza (także dla kamer z ONVIF)','local'));sourceMode.value=cfg.source_mode||'auto';const sourceLabel=element('label','Źródło analizy');sourceLabel.append(sourceMode);fields.append(label,sourceLabel,element('p','Metadane są przechowywane wraz z dostępnymi nagraniami.'),element('p','Lokalnie wykrywa osoby, twarze i tablice. Opcjonalny lokalny model COCO rozszerza klasy obiektów. Profile twarzy wymagają osobnego, świadomego zapisania przez administratora oraz modeli YuNet/SFace. Dopasowania są orientacyjne. Zmiana obrazu jest heurystyką, nie klasyfikacją AI.'));
+    const save=element('button','Zapisz ustawienia');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api(endpoint,'PATCH',{enabled:enabled.checked,rules:[],source_mode:sourceMode.value});status.textContent='Zapisano. Stan: '+(result.status?.state||'oczekiwanie');}catch(error){status.textContent=error.message;}finally{save.disabled=false;}};fields.append(save);status.textContent='Stan: '+(cfg.status?.state||(cfg.enabled?'oczekiwanie':'wyłączone'));loaded=true;
   }catch(error){status.textContent=error.message;}finally{busy=false;}}
   panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)void load();});return panel;
 }

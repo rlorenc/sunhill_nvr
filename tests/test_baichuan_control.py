@@ -48,7 +48,7 @@ class NativeTests(unittest.TestCase):
                 self.assertEqual(client.device['model'],'Reolink Lumus')
                 self.assertEqual(c.capabilities(client)['controls'],{'light_available':True})
                 c.apply(client,'light',True)
-        self.assertTrue(fake.closed);self.assertEqual(fake.commands,[1,1,80,289,289,288])
+        self.assertTrue(fake.closed);self.assertEqual(fake.commands,[1,1,80,289,438,289,438,288])
     def test_unsupported_never_switch(self):
         fake=FakeCamera(light=False)
         with patch.object(b.socket,'create_connection',return_value=fake):

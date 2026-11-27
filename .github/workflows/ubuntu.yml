@@ -31,6 +31,7 @@ jobs:
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/live_controls_browser.py
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/live_layout_browser.py
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/archive_buffer_browser.py
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/detection_boxes_browser.py
       - name: Run Python and Ubuntu configuration tests (including root-owned fixtures)
         run: sudo env SUNHILL_UBUNTU_INTEGRATION=1 PYTHONPATH="$PWD/src" /usr/bin/python3 -m unittest discover -s tests -v
       - name: Verify installer directory permissions with real service account
@@ -64,33 +65,20 @@ jobs:
   default-install:
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [clean, resume]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-      - name: Verify default installation or controlled interrupted 0.2.8 recovery
+      - name: Verify default RTSP-only installation
         run: |
           git checkout -B main "$GITHUB_SHA"
           version=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')
           python3 scripts/package_release.py --candidate "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz"
           tar -xzf "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz" -C "$RUNNER_TEMP"
           cd "$RUNNER_TEMP/sunhill-nvr-$version"
-          bash tests/ubuntu_default_resume_smoke.sh "${{ matrix.mode }}"
-  rtsp-migration:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
-      - name: Test migration of a real 1.0.2 installation to RTSP-only and retained downgrade
-        run: bash tests/ubuntu_rtsp_migration_smoke.sh
+          bash tests/ubuntu_default_resume_smoke.sh clean
   package-verified:
-    needs: [verify, install-smoke, default-install, rtsp-migration]
+    needs: [verify, install-smoke, default-install]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && success() }}
     runs-on: ubuntu-26.04
     steps:

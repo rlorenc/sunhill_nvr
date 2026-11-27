@@ -50,7 +50,6 @@ _ERROR_MESSAGES={
     'active version changed; refresh rollback list':'Wersja aktywna się zmieniła. Odśwież listę.',
     'instance configuration changed since restore point':'Zmieniono konfigurację instancji (np. ścieżki nagrań lub domenę). Przywracanie zablokowane.',
     'TLS mode changed since restore point':'Zmieniono tryb TLS. Przywracanie zablokowane.',
-    'legacy rollback requires installed ProFTPD':'Starsza wersja wymaga zainstalowanego ProFTPD. Przywracanie zablokowane.',
     'retained release integrity check failed':'Weryfikacja zachowanej wersji nie powiodła się.',
     'new release failed its health check':'Nowa wersja nie przeszła kontroli usług. Przywrócono poprzednią wersję.',
 }

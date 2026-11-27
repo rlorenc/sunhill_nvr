@@ -17,7 +17,7 @@ from .cameras import Camera,go2rtc_config
 class ReconcileError(RuntimeError):pass
 
 def desired_gateway(db: sqlite3.Connection) -> dict[str,str]:
-    """Render the RTSP gateway without querying legacy FTP accounts or storage."""
+    """Render the RTSP gateway without querying storage."""
     rows=db.execute('SELECT cameras.slug,cameras.name,camera_details.main_url,camera_details.sub_url,camera_details.record_mode,cameras.enabled FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id ORDER BY cameras.slug').fetchall()
     return {'go2rtc.json':go2rtc_config([Camera(slug,name,main,sub,mode,bool(enabled)) for slug,name,main,sub,mode,enabled in rows])}
 
@@ -81,7 +81,7 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
                 if stat.S_IMODE(info.st_mode)!=expected:repair.add(name)
             previous_contents={name:(previous/name).read_text(encoding='utf-8') for name in contents}
             rollback_safe=not repair and all((previous/name).is_file() and not (previous/name).is_symlink() for name in required_files)
-            if not interrupted and rollback_safe and previous_contents==contents and (set(contents)!={'go2rtc.json'} or not any(os.path.lexists(previous/name) for name in ('ftp.passwd','ftp.group','proftpd.conf'))):
+            if not interrupted and rollback_safe and previous_contents==contents and set(p.name for p in previous.iterdir())==set(contents):
                 return
         except OSError:
             pass

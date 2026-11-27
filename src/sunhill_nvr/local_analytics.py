@@ -109,8 +109,7 @@ class Detector:
         self.people=cv2.HOGDescriptor()
         self.people.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
         if not self.models:raise RuntimeError('local detector models unavailable')
-        from .local_objects import CocoDetector,ForegroundObjects
-        self.foreground=ForegroundObjects(cv2,numpy)
+        from .local_objects import CocoDetector
         try:self.coco=CocoDetector(cv2,numpy)
         except (OSError,ValueError,cv2.error):self.coco=None
         self.template_provider=template_provider;self.recognizer=None
@@ -159,8 +158,7 @@ class Detector:
                 box=[x/WIDTH,y/HEIGHT,w/WIDTH,h/HEIGHT]
                 if kind=='face' and any(k=='face' and iou(box,b)>.3 for k,b,_ in result):continue
                 result.append((kind,box,text))
-        result.extend(self.foreground.observe(image,result))
-        return result
+        return [item for item in result if item[0]!='package']
 
 
 def fallback(slug, stop, emit, *, duration=900, factory=Detector, sampler=sample, generation=model_generation):

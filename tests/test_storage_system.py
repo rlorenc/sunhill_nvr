@@ -5,7 +5,7 @@ from sys import path
 from types import SimpleNamespace
 from unittest.mock import patch
 path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from sunhill_nvr import config,mount,units
+from sunhill_nvr import config,mount,units,lifecycle
 from sunhill_nvr.storage_system import StorageSystem,MediaSelection
 from sunhill_nvr.upgrade_system import SystemAdapter
 
@@ -21,6 +21,7 @@ class StorageSystemTests(unittest.TestCase):
     generated=units.render(self.cfg)
     for name,content in generated.items():(self.system/name).write_text(content)
     (self.state/'managed-units.json').write_text(json.dumps(sorted(generated)))
+    (self.state/'lifecycle.json').write_text(json.dumps(lifecycle.default()))
     self.release=base/'release';self.release.mkdir();self.current=base/'current';self.current.symlink_to(self.release)
     self.adapter=SystemAdapter(self.conf,self.current,self.state,base/'maintenance',os.getuid(),os.getgid(),run=lambda *a,**kw:SimpleNamespace(returncode=0),system_dir=self.system)
     self.system_adapter=StorageSystem(self.adapter);self.backup=self.state/'backup'
@@ -32,7 +33,7 @@ class StorageSystemTests(unittest.TestCase):
     with patch('sunhill_nvr.storage_system.mount.inspect',return_value=disk):
         result=self.system_adapter.candidate(MediaSelection(archive,exports,stage))
     self.assertEqual(result.archive,archive);self.assertFalse(archive.exists());self.assertFalse(exports.exists());self.assertFalse(stage.exists())
- def test_nested_auxiliary_candidate_and_ftp_isolation(self):
+ def test_nested_auxiliary_candidate(self):
     disk=mount.Mount('/','/dev/test','ext4','abc')
     for archive in (self.old,self.data/'missing'):
         with self.subTest(archive=archive):
@@ -42,7 +43,6 @@ class StorageSystemTests(unittest.TestCase):
             self.assertEqual((result.archive,result.staging,result.exports),(archive,stage,exports))
             self.assertFalse(stage.exists());self.assertFalse(exports.exists())
             generated=units.render(result)
-            self.assertIn(f'InaccessiblePaths="{stage}" "{exports}"',generated['sunhill-ftp.service'])
             self.assertNotIn('InaccessiblePaths=',generated['sunhill-recorder.service'])
             self.assertEqual({n:v for n,v in units.render(self.cfg).items() if n.startswith('sunhill-upgrade-')},{n:v for n,v in generated.items() if n.startswith('sunhill-upgrade-')})
  def test_nested_symlink_is_rejected(self):

@@ -54,7 +54,7 @@ class DatabaseTests(unittest.TestCase):
     db=sqlite3.connect(':memory:');initialize(db)
     with patch.dict(MIGRATIONS,{k:v for k,v in MIGRATIONS.items() if k<5},clear=True):migrate(db)
     db.execute("INSERT INTO cameras VALUES(1,'cam','Camera',1)")
-    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,onvif_username,onvif_password) VALUES (1,'rtsp://x','ftp','http://x/onvif/device_service','admin','secret')");db.commit()
+    db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode,onvif_url,onvif_username,onvif_password) VALUES (1,'rtsp://x','rtsp','http://x/onvif/device_service','admin','secret')");db.commit()
     migrate(db)
     self.assertEqual(db.execute('SELECT onvif_username,onvif_password,onvif_auth FROM camera_details').fetchone(),('admin','secret','digest'));db.close()
  def test_cancel_table_migration_preserves_existing_export_jobs(self):

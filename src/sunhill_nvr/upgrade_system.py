@@ -5,7 +5,6 @@ The administrator must provision the state directory and public signing key.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -29,7 +28,7 @@ from .controller import service_ready
 SERVICES = lifecycle.ACTIVE
 STOP_UNITS = ('sunhill-controller.timer','sunhill-controller.service') + tuple(s for s in SERVICES if s!='sunhill-controller.timer')
 START_FIRST = ('sunhill-activity.service','sunhill-controller.service')
-START_REST = tuple(s for s in SERVICES if s not in ('sunhill-activity.service','sunhill-go2rtc.service','sunhill-ftp.service'))
+START_REST = tuple(s for s in SERVICES if s not in ('sunhill-activity.service','sunhill-go2rtc.service'))
 MAX_DATABASE_BYTES = 10 * 1024 * 1024 * 1024
 
 
@@ -77,7 +76,6 @@ class SystemAdapter:
     nginx_file: Path = Path('/etc/nginx/conf.d/sunhill-nvr.conf')
     tls_certificate: Path = Path('/opt/sunhill-nvr/config/tls/current/fullchain.pem')
     tls_key: Path = Path('/opt/sunhill-nvr/config/tls/current/key.pem')
-    retire_ftp: bool = False
 
     def _command(self,args,timeout=60):
         try:
@@ -122,7 +120,7 @@ class SystemAdapter:
 
     def stop(self) -> None:
         # Stop the timer and its current invocation first so it cannot restart
-        # FTP while the remaining services are being quiesced.
+        # the gateway while the remaining services are being quiesced.
         self._command(['/usr/bin/systemctl','stop','sunhill-controller.timer'],timeout=60)
         self._command(['/usr/bin/systemctl','stop','sunhill-controller.service'],timeout=60)
         services=[name for name in self._runtime()['active'] if name!='sunhill-controller.timer']
@@ -132,7 +130,7 @@ class SystemAdapter:
 
     def start(self) -> None:
         self._command(['/usr/bin/systemctl','start',*START_FIRST],timeout=180)
-        services=[name for name in self._runtime()['active'] if name not in ('sunhill-activity.service','sunhill-go2rtc.service','sunhill-ftp.service')]
+        services=[name for name in self._runtime()['active'] if name not in ('sunhill-activity.service','sunhill-go2rtc.service')]
         if services:self._command(['/usr/bin/systemctl','start',*services],timeout=180)
 
     def assert_stopped(self) -> None:
@@ -152,34 +150,15 @@ class SystemAdapter:
         except (OSError,UnicodeError,AttributeError,subprocess.SubprocessError) as exc:
             raise ReleaseError('cannot verify application service state') from exc
 
-    def _ftp_storage_paused(self) -> bool:
-        # Only new releases deliberately allow an unavailable archive during
-        # application health validation. Never excuse unrelated FTP failures.
-        if not (self.current/'app/sunhill_nvr/storage_paths.py').is_file():return False
-        from .config import load
-        from .storage_paths import guard
-        from .workers import recording_space_available
-        import sqlite3
-        from urllib.parse import quote
-        try:
-            cfg=load(self.config_file)
-            with contextlib.closing(sqlite3.connect('file:'+quote(str(cfg.database),safe='/')+'?mode=ro',uri=True,timeout=5)) as db:
-                try:return not guard(db,cfg.archive)() or not recording_space_available(db,cfg)
-                except (OSError,ValueError,RuntimeError):return True
-        except (OSError,ValueError,sqlite3.Error):return False
-
     def _healthy_once(self) -> bool:
         try:
             # systemctl with several units may succeed when only one is active.
             active=self._runtime()['active']
-            paused='sunhill-ftp.service' in active and self._ftp_storage_paused()
             for service in active:
-                if service=='sunhill-ftp.service' and paused:continue
                 self._command(['/usr/bin/systemctl','is-active','--quiet',service],timeout=30)
             # Active systemd processes are not necessarily accepting requests yet.
             self._command(['/usr/bin/systemctl','is-active','--quiet','nginx.service'],timeout=30)
-            for service in ('sunhill-go2rtc.service','sunhill-ftp.service'):
-                if service=='sunhill-ftp.service' and paused:continue
+            for service in ('sunhill-go2rtc.service',):
                 if service in active and not service_ready(service,timeout=3):return False
             opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open('http://127.0.0.1:8088/internal/health',timeout=5) as response:
@@ -190,9 +169,6 @@ class SystemAdapter:
         deadline=time.monotonic()+max(0,self.health_timeout)
         while True:
             if self._healthy_once():
-                if self.retire_ftp and self._runtime()['version']==2:
-                    try:self._as_service(self.current,'sunhill_nvr.cli','--config',str(self.config_file),'verify-rtsp-recorders')
-                    except ReleaseError:return False
                 return True
             if time.monotonic()>=deadline:return False
             time.sleep(min(1,max(0,deadline-time.monotonic())))
@@ -304,7 +280,7 @@ class SystemAdapter:
 
     def _runtime(self) -> dict:
         path=self.state/'lifecycle.json'
-        if not path.exists() and not path.is_symlink():return lifecycle.default()
+        if not path.exists() and not path.is_symlink():raise ReleaseError('missing lifecycle manifest; a clean installation is required')
         try:
             value=json.loads(self._read_trusted(path,limit=32768))
             # While recovering an interrupted unit-set change, the two manifests
@@ -413,8 +389,6 @@ class SystemAdapter:
         for n in set(wanted_names)-set(names):
             p=self.system_dir/n
             if p.exists() or p.is_symlink():raise ReleaseError('restore unit conflicts with existing configuration')
-        if wanted['version']==1 and not Path('/usr/sbin/proftpd').is_file():
-            raise ReleaseError('legacy rollback requires installed ProFTPD')
         proxy=self._read_trusted(source/'nginx.conf')
         if b'if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }' not in proxy:
             raise ReleaseError('restore proxy lacks maintenance fence')
@@ -448,9 +422,8 @@ class SystemAdapter:
             command=['/usr/bin/env','-i','PATH=/usr/bin:/bin',f'PYTHONPATH={candidate / "app"}',
                      '/usr/bin/python3','-m','sunhill_nvr.deployment_cli','--config',str(self.config_file),'--output',str(generated)]
             if cert:command.append('--lan-tls')
-            # Never silently re-enable FTP after the transition. An explicit
-            # console retirement uses the same reversible system backup.
-            if self.retire_ftp or self._runtime()['version']==2:command.append('--rtsp-only')
+            self._runtime() # validate installed lifecycle before generating candidate
+            command.append('--rtsp-only')
             self._command(command,timeout=60)
             unit_dir=generated/'units'
             if unit_dir.is_symlink() or not unit_dir.is_dir():raise ReleaseError('generated units unavailable')
@@ -460,7 +433,7 @@ class SystemAdapter:
                 raise ReleaseError('invalid generated unit list')
             manifest=generated/'lifecycle.json'
             modern=manifest.exists() or manifest.is_symlink()
-            if not modern and next_names!=names:
+            if not modern:
                 raise ReleaseError('update changes managed unit list without lifecycle manifest')
             if {n for n in names if n.startswith('sunhill-upgrade-')}!={n for n in next_names if n.startswith('sunhill-upgrade-')}:
                 raise ReleaseError('update changes recovery unit list; manual migration required')

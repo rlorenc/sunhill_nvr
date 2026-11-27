@@ -180,10 +180,14 @@ Szczegóły przygotowania wydań i zasady pracy: [AGENTS.md](AGENTS.md) oraz [HA
 
 ### Ręczne przywracanie wersji (1.1.3+)
 
-Zachowane punkty przywracania są dostępne w Administracja / Aktualizacja aplikacji oraz przez `bash install.sh --rollback-history`, `bash install.sh --rollback` i `bash install.sh --downgrade WERSJA`. Pierwsze wdrożenie z rozpakowanego 1.1.3 wymaga aktualizacji przypiętego recovery (automatyczna ścieżka repair lub jawne `--update --repair`; `--update --rtsp-only` przy migracji FTP). Uwaga: przywracana jest historyczna baza, a nie migracja danych wstecz. [Instrukcja](docs/rollback-1.1.3.md).
+Zachowane punkty przywracania są dostępne w Administracja / Aktualizacja aplikacji oraz przez `bash install.sh --rollback-history`, `bash install.sh --rollback` i `bash install.sh --downgrade WERSJA`. Od 1.1.6 obowiązuje kontrakt RTSP-only, a pierwsza aktualizacja zgodnej instalacji z rozpakowanego wydania może wymagać przygotowania przypiętego recovery. Uwaga: przywracana jest historyczna baza, a nie migracja danych wstecz. [Instrukcja](docs/rollback-1.1.3.md).
 
 ### 1.1.4: diagnoza urządzeń i RTSP-only
 
 Menu konta otwiera się kliknięciem nazwy użytkownika. Zawiera ustawienia i wylogowanie; zdarzenia pozostają na osi archiwum. Panel sprzętowy pokazuje potwierdzone funkcje; „Ponów diagnozę kamery” wymusza aktualny odczyt. Wynik zapisuje się w SQLite (24 h, wynik częściowy 120 s, zmiana konfiguracji unieważnia). Głos wymaga potwierdzonego kanału G.711; firmware wymaga deklaracji HTTPFirmwareUpgrade. Lokalna detekcja ruchu dodaje prostokąty z różnic kolejnych klatek (2 fps, do 32 kamer, bez rekonstrukcji starego archiwum). Limity i wydajność wymagają pomiarów na docelowym serwerze.
 
-Nowa instalacja jest tylko RTSP. Aktualizacja starszej instalacji z FTP: `bash install.sh --update --rtsp-only`. Nie ma czynnego demona FTP, API kont, konfiguratora ani instalacji ProFTPD. Historyczny schemat SQLite i niskopoziomowy opis starych jednostek pozostają dla migracji i rollbacku. Pakiet systemowy ProFTPD nie jest globalnie odinstalowywany. Przerwaną instalację 0.2.x należy najpierw odzyskać oryginalną paczką 1.1.3 (`--resume`), następnie zaktualizować do 1.1.4.
+### 1.1.6: wyłącznie RTSP i widoczność ramek
+
+Czysta instalacja: `bash install.sh`. Jedyny transport nagrywania to RTSP (opcja bez zapisu pozostaje); nie ma obsługi ani migracji FTP. Instalacje z niezgodnym manifestem lub trybem zapisu wymagają czystej instalacji. Aktualizacje i rollback zgodnych wersji pozostają. Nie usuwa się automatycznie danych i systemowych pakietów starszych instalacji. Historia Git i dokumentacja historyczna nie są przepisywane.
+
+W Na żywo i Archiwum przycisk „Ukryj ramki AI” / „Pokaż ramki AI” steruje wyłącznie prostokątami, bez zmiany analityki i osi czasu. Ramki bez tekstu, w kolorze legendy. Preferencja zapisywana per konto. Wydanie testowe, CI Ubuntu nieodebrane.

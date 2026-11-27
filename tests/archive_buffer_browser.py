@@ -42,7 +42,12 @@ with tempfile.TemporaryDirectory() as directory:
         # Only supplied coordinates at the observation time are drawn, never a fabricated box.
         page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:99,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}];drawDetectionOverlay($('archive-player'),1795608002)")
         assert page.locator('#archive-detection-overlay .detection-box').count()==1
-        assert page.locator('#archive-detection-overlay .detection-box').inner_text()=='Człowiek'
+        assert page.locator('#archive-detection-overlay .detection-box').inner_text()==''
+        assert page.locator('#archive-detection-overlay .detection-box').evaluate("el=>getComputedStyle(el).borderTopColor")=='rgb(239, 100, 100)'
+        page.evaluate("code=>runArchiveTest(code)","paintNativeObjects($('archive-object-overlay'),$('archive-player'),{stamp_ms:1,session:'test',objects:[{kind:'motion',id:9,label:'Ruch',box:[.1,.2,.3,.4]},{kind:'plate',id:10,plate_number:'TEST',box:[.2,.3,.2,.1]},{kind:'face',id:11,face_match:'Name',box:[.3,.4,.2,.1]}]})")
+        assert page.locator('#archive-object-overlay .detection-box').count()==3
+        assert page.locator('#archive-object-overlay .detection-box').all_inner_texts()==['','','']
+        assert page.locator('#archive-object-overlay .detection-box').first.evaluate("el=>getComputedStyle(el).borderTopColor")=='rgb(248, 237, 54)'
         assert page.locator('#archive-detection-overlay .detection-box').bounding_box()['width']>0
         page.evaluate("code=>runArchiveTest(code)","eventMarkers=Array.from({length:24},(_,i)=>({id:i,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}));drawDetectionOverlay($('archive-player'),1795608002)")
         assert page.locator('#archive-detection-overlay .detection-box').count()==24

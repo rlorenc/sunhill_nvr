@@ -16,7 +16,7 @@ class WorkerTests(unittest.TestCase):
  def test_only_enabled_rtsp_cameras_selected(self):
     self.db.execute("INSERT INTO cameras VALUES(1,'a','A',1)");self.db.execute("INSERT INTO cameras VALUES(2,'b','B',1)")
     self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://a','rtsp')")
-    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(2,'rtsp://b','ftp')");self.db.commit()
+    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(2,'rtsp://b','none')");self.db.commit()
     self.assertEqual(selected_recorders(self.db),{'a'})
  def test_recording_reserve_uses_configured_minimum_and_fails_closed(self):
     from types import SimpleNamespace

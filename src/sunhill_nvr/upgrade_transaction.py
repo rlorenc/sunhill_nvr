@@ -21,7 +21,7 @@ from .release import VERSION, ReleaseError
 
 @dataclass(frozen=True)
 class Operations:
-    # Fence blocks external writes and FTP uploads while still permitting local
+    # Fence blocks external writes while still permitting local
     # health checks. It must remain effective across a crash and be idempotent.
     fence: Callable[[], None]
     unfence: Callable[[], None]

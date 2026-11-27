@@ -38,6 +38,12 @@ const code=typeof readFile==='function'?readFile('src/sunhill_nvr/static/app.js'
 eval(code+`
 (async()=>{
   me={timezone:'Europe/Warsaw'};
+  me={id:99,timezone:'Europe/Warsaw'};let detectionSaved=null;let hiddenBoxes=false;
+  $('application').classList.toggle=(name,value)=>{if(name==='hide-detection-boxes')hiddenBoxes=value;};
+  api=async(url,method,data)=>{if(method==='POST'){detectionSaved=data;return {ok:true};}return {workspace:{layout_id:null,order:[],sizes:{},detection_boxes:false}};};
+  await restoreLiveWorkspace();if(!hiddenBoxes||$('live-detection-boxes').textContent!=='Pokaż ramki AI')throw new Error('detection visibility not restored');
+  $('archive-detection-boxes').listeners.click();await flushLiveWorkspace();if(hiddenBoxes||!detectionSaved?.detection_boxes||$('live-detection-boxes').textContent!=='Ukryj ramki AI')throw new Error('detection visibility not synchronized or saved');
+  workspaceOwner=null;workspaceReady=false;me={timezone:'Europe/Warsaw'};
   const originalView=view;let logoTarget=null;view=which=>{logoTarget=which;};$('brand-live').listeners.click();if(logoTarget!=='cameras')throw new Error('brand did not open Live');me=null;logoTarget=null;$('brand-live').listeners.click();if(logoTarget!==null)throw new Error('brand bypassed login');me={timezone:'Europe/Warsaw'};view=originalView;
   api=async()=>({origin:'https://nvr.example',supported:false,pending:false,status:{state:'idle',message:''}});
   await refreshDomain();

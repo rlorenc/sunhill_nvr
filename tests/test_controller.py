@@ -9,7 +9,7 @@ class ControllerTests(unittest.TestCase):
  def test_readiness_accepts_fragmented_real_protocol_greetings(self):
     import socket,threading,time
     from sunhill_nvr.controller import service_ready
-    for service,parts in [('sunhill-ftp.service',[b'2',b'20 Ready\r',b'\n']),('sunhill-ftp.service',[b'220-Welcome\r\n220-',b'Info\r\n220 Ready\r\n']),('sunhill-go2rtc.service',[b'HT',b'TP/1.1 ',b'200 OK\r\n'])]:
+    for service,parts in [('sunhill-go2rtc.service',[b'HT',b'TP/1.1 ',b'200 OK\r\n'])]:
         with self.subTest(service=service):
             client,server=socket.socketpair()
             def respond():
@@ -23,7 +23,7 @@ class ControllerTests(unittest.TestCase):
  def test_readiness_rejects_invalid_http_status_and_incomplete_greeting(self):
     import socket,time
     from sunhill_nvr.controller import service_ready
-    for service,payload in [('sunhill-go2rtc.service',b'HTTP/1.1 2000 bogus\r\n'),('sunhill-ftp.service',b'220'),('sunhill-ftp.service',b'220-Welcome\r\n'),('sunhill-ftp.service',b'220 Ready\n')]:
+    for service,payload in [('sunhill-go2rtc.service',b'HTTP/1.1 2000 bogus\r\n'),('sunhill-go2rtc.service',b'HTTP/1.1 200'),('sunhill-go2rtc.service',b'HTTP/1.1 200 OK\n')]:
         client,server=socket.socketpair()
         with client,server:
             server.sendall(payload);start=time.monotonic()

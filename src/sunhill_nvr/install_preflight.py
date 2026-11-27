@@ -4,10 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-# FTP listens on all interfaces. The remaining services listen on loopback,
+# Internal services listen on loopback,
 # but rejecting a port used on a specific interface also avoids IPv6/dual-stack
 # ambiguity and unintentional connection to a different application's service.
-REQUIRED_TCP_PORTS = {21: 'FTP', 1984: 'go2rtc', 1985: 'live proxy', 1986: 'audio backchannel',
+REQUIRED_TCP_PORTS = {1984: 'go2rtc', 1985: 'live proxy', 1986: 'audio backchannel',
                       80: 'LAN HTTP access', 8080: 'Nginx tunnel endpoint', 8088: 'web application',
                       8554: 'local RTSP gateway'}
 
@@ -57,7 +57,6 @@ def require_ports_free(proc_net: Path = Path('/proc/net'), *, lan_tls: bool = Fa
         # Linux with IPv6 disabled need not expose this table.
         pass
     required = dict(REQUIRED_TCP_PORTS)
-    if rtsp_only:required.pop(21,None)
     if lan_tls:required[443] = 'LAN HTTPS'
     conflicts = sorted(occupied & required.keys())
     if conflicts:

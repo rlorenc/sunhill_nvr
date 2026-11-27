@@ -23,4 +23,4 @@ Po zakończeniu partii dostarcz wyniki i ewentualne niezaliczone warunki; zaktua
 
 Pakiet wydania generuj z czystej gałęzi `main`: `python3 scripts/package_release.py --candidate /ścieżka/sunhill-nvr-WERSJA.tar.gz`. Numer w `src/sunhill_nvr/__init__.py` zwiększaj przy każdym wydaniu i utrzymuj widoczny w aplikacji. Skrypt dodaje HEAD do bundle, wykonuje zwykłe git clone i fsck oraz weryfikuje pliki. Nie nadpisuj poprzednich paczek. Odtworzenie: `git clone sunhill-nvr-history.bundle sunhill-nvr-work`.
 
-Od 0.2.9 nie publikuj zweryfikowanego wydania bez zaliczonych rzeczywistych zadań CI Ubuntu 26.04 (`verify`, `install-smoke`, `default-install`: clean i resume). Lokalna paczka `--candidate` musi być oznaczona jako niezweryfikowany kandydat. Testy z zastępczym demonem nie zastępują realnych protokołów.
+Od 0.2.9 nie publikuj zweryfikowanego wydania bez zaliczonych rzeczywistych zadań CI Ubuntu 26.04 (`verify`, `install-smoke`, `default-install`: clean; od 1.1.6 bez scenariusza legacy). Lokalna paczka `--candidate` musi być oznaczona jako niezweryfikowany kandydat. Testy z zastępczym demonem nie zastępują realnych protokołów.

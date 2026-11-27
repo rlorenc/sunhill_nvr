@@ -12,7 +12,7 @@ from .lifecycle import ENABLED
 
 SERVICES = (
     'nginx.service', 'sunhill-activity.service', 'sunhill-web.service',
-    'sunhill-live-proxy.service', 'sunhill-go2rtc.service', 'sunhill-ftp.service',
+    'sunhill-live-proxy.service', 'sunhill-go2rtc.service',
     'sunhill-export.service', 'sunhill-index.service', 'sunhill-recorder.service',
     'sunhill-health.service', 'sunhill-stream-health.service', 'sunhill-clock.service',
     'sunhill-retention.service', 'sunhill-retention-preview.service',
@@ -25,14 +25,13 @@ def check(host: str, *, run=subprocess.run, opener=None, readiness=None, rtsp_on
     if not HOST.fullmatch(host):
         raise ValueError('invalid hostname')
     for unit in SERVICES:
-        if rtsp_only and unit=='sunhill-ftp.service':continue
         result = run(['/usr/bin/systemctl', 'is-active', '--quiet', unit],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, timeout=5)
         if result.returncode != 0:
             raise RuntimeError('service is not active: ' + unit)
-    # Running now is not proof that services survive a reboot. go2rtc and
-    # FTP deliberately start through the boot controller, not independently.
+    # Running now is not proof that services survive a reboot. The gateway
+    # deliberately starts through the boot controller, not independently.
     for unit in BOOT_UNITS:
         result = run(['/usr/bin/systemctl', 'is-enabled', '--quiet', unit],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -40,8 +39,7 @@ def check(host: str, *, run=subprocess.run, opener=None, readiness=None, rtsp_on
         if result.returncode != 0:
             raise RuntimeError('service is not enabled for boot: ' + unit)
     readiness = readiness or service_ready
-    for unit in ('sunhill-go2rtc.service', 'sunhill-ftp.service'):
-        if rtsp_only and unit=='sunhill-ftp.service':continue
+    for unit in ('sunhill-go2rtc.service',):
         if not readiness(unit, timeout=3):
             raise RuntimeError('service is not responding: ' + unit)
     opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))

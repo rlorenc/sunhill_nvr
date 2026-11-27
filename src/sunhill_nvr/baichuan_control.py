@@ -96,13 +96,14 @@ class Baichuan:
             except (ValueError,ET.ParseError,UnicodeError):continue
         raise ProtocolError('Baichuan: nieprawidłowe XML zdarzenia.')
 
-    def request(self,cmd,body=b'',*,channel=None,nonce=False,login=False,push_channel=False,on_push=None):
+    def request(self,cmd,body=b'',*,channel=None,nonce=False,login=False,push_channel=False,on_push=None,binary=False):
         # A new sequence per request, low byte encodes host/channel.
         self.seq=(self.seq+1)%0x1000000;ch=251 if push_channel else (250 if channel is None else channel+1)
         mid=(self.seq<<8)|ch
-        extension=xml('Extension',{'channelId':channel},wrap=False) if channel is not None else b''
+        if binary and (cmd!=202 or channel!=0 or not isinstance(body,bytes) or not 0<len(body)<=8192):raise ProtocolError('Invalid binary talk frame')
+        extension=xml('Extension',{'channelId':channel,**({'binaryData':1} if binary else {})},wrap=False) if channel is not None else b''
         encode=(lambda b:xor(b,ch)) if nonce or login else (lambda b:aes(b,self.key))
-        payload=encode(extension)+encode(body)
+        payload=encode(extension)+(body if binary else encode(body))
         header=struct.pack('<IIII',_MAGIC,cmd,len(payload),mid)
         header+=b'\x12\xdc\x14\x65' if nonce else b'\x00\x00\x14\x64'+struct.pack('<I',len(extension))
         self.sock.settimeout(self.remaining());self.sock.sendall(header+payload)
@@ -120,7 +121,7 @@ class Baichuan:
             if not (status==200 or (nonce and kind in (0x6514,0x6614) and status in (0xdd00,0xdd01,0xdd02,0xdd03,0xdd12))):
                 raise Rejected(f'Baichuan: kamera odrzuciła polecenie (cmd={cmd}, kod={status}, klasa={h[18:20].hex()}).')
             raw=raw[offset:]
-            if not raw:return None
+            if not raw or binary:return None
             # Login replies may be XOR or AES depending on firmware.
             decoders=[lambda b:xor(b,returned_id&255)] if nonce or login else [lambda b:aes(b,self.key,True),lambda b:xor(b,returned_id&255)]
             if nonce and status==0xdd00:decoders.insert(0,lambda b:b)
@@ -170,6 +171,7 @@ class Baichuan:
         # A successful GetFloodlightTask with channel 0 is positive evidence.
         # Its scheduling flag is NOT the current physical light state.
         root=None
+        unknown={}
         for command in (289,438):
             try:root=self.request(command,channel=0)
             except Rejected:continue
@@ -177,12 +179,13 @@ class Baichuan:
             if task is not None and task.findtext('channel') in ('0',None):
                 self.light_available=True
                 state=task.findtext('status')
-                return {'light_available':True,**({'light':state=='1'} if state in ('0','1') else {})}
+                if state in ('0','1'):return {'light_available':True,'light':state=='1'}
+                unknown={'light_available':True}
             if root is not None:
                 for state in root.findall('.//FloodlightStatus'):
                     if state.findtext('channel')=='0' and state.findtext('status') in ('0','1'):
                         self.light_available=True;return {'light_available':True,'light':state.findtext('status')=='1'}
-        return {}
+        return unknown
 
     def switch(self,on):
         if type(on) is not bool or not self.light().get('light_available'):raise ProtocolError('Baichuan: kamera nie potwierdziła obsługi reflektora.')

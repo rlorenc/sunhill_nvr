@@ -8,15 +8,15 @@ import http.client
 import xml.etree.ElementTree as ET
 from .camera_reboot import target
 from .camera_discovery import DEVICE, soap
-from . import camera_control, camera_settings, talkback, onvif_metadata
+from . import camera_control, camera_settings, talkback, onvif_metadata, reolink_talk
 
 TTL=86400
 RETRY=120
-TARGET_SQL='SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?'
+TARGET_SQL='SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth,sub_url FROM camera_details WHERE camera_id=?'
 
 
 def fingerprint(row):
-    return hashlib.sha256(json.dumps(list(row),separators=(',',':')).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([2,*row],separators=(',',':')).encode()).hexdigest()
 
 
 def cached(db,cid,row,now=None):
@@ -89,18 +89,24 @@ def diagnose(row):
             filter_abilities(result,abilities)
     except camera_control.ControlError as exc:
         result={'controls':{},'settings':[],'partial':True,'message':str(exc)}
-    result=camera_control.supplement_identity(result,*row)
+    result=camera_control.supplement_identity(result,*row[:5])
     # Known absence, not a positive hardware assumption based on model name.
     model=(result.get('device') or {}).get('model','').upper()
     if model=='RLC-510A':
         for key in ('light','light_available','brightness','zoom','focus','autofocus','presets'):result['controls'].pop(key,None)
         result['settings']=[x for x in result['settings'] if x['key'] not in ('speaker_volume','siren','floodlight_brightness')]
         result['talkback']=False
-    else:result['talkback']=probe_talkback(row[0])
+    else:
+        result['talkback']=False
+        for index,url in enumerate((row[0],row[5] if len(row)>5 else None)):
+            if url and probe_talkback(url):
+                result.update(talkback=True,talkback_stream=index,talkback_transport='onvif');break
+        if not result['talkback'] and (result.get('device') or {}).get('manufacturer','').lower().startswith('reolink') and reolink_talk.probe(row[0]):
+            result.update(talkback=True,talkback_stream=0,talkback_transport='baichuan')
     result.update(reboot=False,firmware_upgrade=False)
     if row[1]:
         try:
-            endpoint,ip,user,password,mode=target(*row)
+            endpoint,ip,user,password,mode=target(*row[:5])
             root=soap(endpoint,ip,user,password,DEVICE,'GetServiceCapabilities',mode=mode)
             for node in root.iter():
                 if node.tag.rsplit('}',1)[-1]=='GetServiceCapabilitiesResponse':result['reboot']=True

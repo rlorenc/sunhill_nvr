@@ -17,8 +17,8 @@ from . import database, workers
 from .camera_control import Reolink, Unsupported
 from .baichuan_control import Baichuan
 
-TYPES=('person','vehicle','animal','motion','face','package','visitor','tamper')
-ALIASES={'people':'person','person':'person','vehicle':'vehicle','dog_cat':'animal','animal':'animal','face':'face','package':'package','visitor':'visitor','tamper':'tamper','md':'motion'}
+TYPES=('person','vehicle','animal','motion','face','visitor','tamper','plate')
+ALIASES={'people':'person','person':'person','vehicle':'vehicle','dog_cat':'animal','animal':'animal','face':'face','visitor':'visitor','tamper':'tamper','md':'motion'}
 DEFAULT_MASK=255
 SOURCE='reolink'
 MAX_CAMERAS=32
@@ -56,7 +56,7 @@ def parse_push(root):
             result.update({t:raw in active for raw,t in [('md','motion'),('visitor','visitor'),('tamper','tamper')]})
         if ai is not None:
             active={ALIASES[v] for v in ai.lower().replace(' ','').split(',') if v in ALIASES}
-            result.update({t:t in active for t in ('person','vehicle','animal','face','package')})
+            result.update({t:t in active for t in ('person','vehicle','animal','face')})
         return result
     return {}
 
@@ -98,7 +98,7 @@ def snapshot(db,cid,url,states,transport,now=None):
                 eid,last=active[kind]
                 if last is None or now-last>=15:db.execute('UPDATE event_markers SET last_seen=? WHERE id=?',(now,eid))
             else:db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,event_type,source,last_seen) VALUES(?,?,?,?,?)',(cid,now,kind,SOURCE,now))
-        previous=cfg['status']; supported=sorted(({k for k,v in states.items() if v} if transport=='baichuan' else set(states)) | set(previous['supported'] if previous and previous['transport']==transport else []))
+        previous=cfg['status']; supported=sorted((({k for k,v in states.items() if v} if transport=='baichuan' else set(states)) | set(previous['supported'] if previous and previous['transport']==transport else [])) & set(TYPES))
         if not previous or previous['state']!='active' or previous['transport']!=transport or now-previous['checked_at']>=30 or supported!=previous['supported']:
             db.execute('INSERT INTO camera_event_status VALUES(?,?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET transport=excluded.transport,state=excluded.state,checked_at=excluded.checked_at,supported=excluded.supported',(cid,transport,'active',now,json.dumps(supported)))
     return True

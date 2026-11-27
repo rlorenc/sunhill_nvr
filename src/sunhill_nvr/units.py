@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from .config import Config
-from .media_layout import nested_auxiliary
 
 def systemd_path(path: Path) -> str:
     value=str(path)
@@ -12,7 +11,7 @@ def systemd_path(path: Path) -> str:
     return '"'+value.replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
 
 def worker(name: str, command: str, config: Config, *, write_paths: tuple[Path,...], root: bool=False) -> str:
-    if name not in ('export','index','retention','retention-preview','recorder','health','stream-health','clock','activity','controller','web','live-proxy','go2rtc','ftp'):
+    if name not in ('export','index','retention','retention-preview','recorder','health','stream-health','clock','activity','controller','web','live-proxy','go2rtc'):
         raise ValueError('unknown service')
     if '\n' in command or '\r' in command:raise ValueError('unsafe command')
     user='root' if root else 'sunhill'
@@ -24,7 +23,6 @@ def worker(name: str, command: str, config: Config, *, write_paths: tuple[Path,.
         if parent.parent!=Path('/run') or not parent.name or not parent.name.replace('-','').replace('_','').isalnum():
             raise ValueError('activity socket must be in a named /run directory')
         runtime=f'RuntimeDirectory={parent.name}\nRuntimeDirectoryMode=0750\n'
-    elif name=='ftp':runtime='RuntimeDirectory=sunhill-ftp\nRuntimeDirectoryMode=0750\n'
     return f'''[Unit]
 Description=Sunhill NVR {name}
 Requires=sunhill-upgrade-recover.service
@@ -53,7 +51,7 @@ ReadWritePaths={writable}
 WantedBy=multi-user.target
 '''
 
-def render(config: Config, *, legacy_policy: bool=False, rtsp_only: bool=False) -> dict[str,str]:
+def render(config: Config, *, rtsp_only: bool=True) -> dict[str,str]:
     py='/usr/bin/python3 -m sunhill_nvr.cli'
     state=config.database.parent;lock=config.archive_lock.parent
     recorder_root=Path(os.path.commonpath((str(config.archive),str(config.staging))))
@@ -74,44 +72,14 @@ def render(config: Config, *, legacy_policy: bool=False, rtsp_only: bool=False) 
         ('clock',py+' clock-worker',(state,)),
         ('activity',py+' activity-helper',(config.activity_socket.parent,)),
         ('go2rtc','/opt/sunhill-nvr/bin/go2rtc -config /opt/sunhill-nvr/control/current/go2rtc.json',(state,)),
-        # SQLite mode=ro still needs writable WAL/SHM sidecars on cold start.
-        ('ftp','/usr/sbin/proftpd -n -c /opt/sunhill-nvr/control/current/proftpd.conf',(state,config.archive,Path('/run/sunhill-ftp'))),
     ]:
-        units[f'sunhill-{name}.service']=worker(name,command,config,write_paths=paths,root=(name in ('ftp','activity')))
-    if not legacy_policy:units['sunhill-go2rtc.service']=units['sunhill-go2rtc.service'].replace('ExecStart=/opt/sunhill-nvr/bin/go2rtc', 'ExecCondition=/usr/bin/test -s /opt/sunhill-nvr/control/current/go2rtc.json\nExecStart=/opt/sunhill-nvr/bin/go2rtc')
-    units['sunhill-ftp.service']=units['sunhill-ftp.service'].replace('ExecStart=/usr/sbin/proftpd',f'ExecStartPre={py} check-storage\nExecStartPre=/usr/sbin/runuser -u sunhill -- {py} prepare-ftp-homes\nExecStart=/usr/sbin/proftpd')
-    # The shared FTP account is chrooted at the archive root. Hide the
-    # auxiliary trees in its mount namespace even if AppArmor is unavailable.
-    hidden=[p for p in (config.staging,config.exports) if nested_auxiliary(config.archive,p)]
-    if hidden:
-        line='InaccessiblePaths='+' '.join(systemd_path(p) for p in hidden)+'\n'
-        units['sunhill-ftp.service']=units['sunhill-ftp.service'].replace('[Install]',line+'\n[Install]')
+        units[f'sunhill-{name}.service']=worker(name,command,config,write_paths=paths,root=(name=='activity'))
+    units['sunhill-go2rtc.service']=units['sunhill-go2rtc.service'].replace('ExecStart=/opt/sunhill-nvr/bin/go2rtc', 'ExecCondition=/usr/bin/test -s /opt/sunhill-nvr/control/current/go2rtc.json\nExecStart=/opt/sunhill-nvr/bin/go2rtc')
     # The privileged controller is timer-driven and must run once, not forever.
-    controller=worker('controller',py+' control-once',config,write_paths=(state,config.control_state,Path('/run')),root=True)
+    controller=worker('controller',py+' control-rtsp-once',config,write_paths=(state,config.control_state,Path('/run')),root=True)
     controller=controller.replace('ExecStart=', 'ExecStartPre=+'+py+' prepare-storage\nExecStart=',1)
     units['sunhill-controller.service']=controller.replace('Type=simple','Type=oneshot').replace('Restart=on-failure\nRestartSec=5\n','')
-    if not legacy_policy:
-        name='sunhill-ftp-policy.service'
-        units['sunhill-controller.service']=units['sunhill-controller.service'].replace('Requires=sunhill-upgrade-recover.service','Requires=sunhill-upgrade-recover.service '+name).replace('After=network-online.target sunhill-upgrade-recover.service','After=network-online.target sunhill-upgrade-recover.service '+name)
-        # A separate short-lived root service can reload AppArmor without giving
-        # the controller write access to /etc or weakening its sandbox.
-        units[name]='''[Unit]
-Description=Refresh Sunhill NVR FTP AppArmor policy
-Requires=sunhill-upgrade-recover.service
-After=sunhill-upgrade-recover.service
-
-[Service]
-Type=oneshot
-User=root
-Environment="PYTHONPATH=/opt/sunhill-nvr/current/app"
-Environment="PYTHONDONTWRITEBYTECODE=1"
-UMask=0077
-ExecStart=/usr/bin/python3 -m sunhill_nvr.apparmor_ftp /opt/sunhill-nvr/config/config.json
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=-/etc/apparmor.d/local /run
-'''
-    units['sunhill-controller.timer']='''[Unit]\nDescription=Refresh Sunhill camera and FTP configuration\nRequires=sunhill-upgrade-recover.service\nAfter=sunhill-upgrade-recover.service\n\n[Timer]\nOnBootSec=10s\nOnUnitActiveSec=15s\nUnit=sunhill-controller.service\n\n[Install]\nWantedBy=timers.target\n'''
+    units['sunhill-controller.timer']='''[Unit]\nDescription=Refresh Sunhill camera configuration\nRequires=sunhill-upgrade-recover.service\nAfter=sunhill-upgrade-recover.service\n\n[Timer]\nOnBootSec=10s\nOnUnitActiveSec=15s\nUnit=sunhill-controller.service\n\n[Install]\nWantedBy=timers.target\n'''
     recovery_command='/usr/bin/python3 -m sunhill_nvr.upgrade_admin'
     protected_paths=' '.join(systemd_path(p) for p in (Path('/opt/sunhill-nvr'),Path('/opt/sunhill-nvr/config'),Path('/etc/systemd/system'),Path('/etc/nginx/conf.d'),config.control_state,config.database.parent))
     units['sunhill-upgrade-recover.service']=f'''[Unit]
@@ -188,11 +156,4 @@ Unit=sunhill-upgrade-apply.service
 [Install]
 WantedBy=timers.target
 '''
-    if rtsp_only:
-        # Keep the four protected boot/recovery units byte-identical. The
-        # old release's files can therefore be restored by the new manager.
-        units.pop('sunhill-ftp.service')
-        units.pop('sunhill-ftp-policy.service',None)
-        units['sunhill-controller.service']=units['sunhill-controller.service'].replace(' sunhill-ftp-policy.service','').replace(' control-once',' control-rtsp-once')
-        units['sunhill-controller.timer']=units['sunhill-controller.timer'].replace('camera and FTP configuration','camera configuration')
     return units

@@ -5,7 +5,7 @@ Jedynym nadrzędnym źródłem treści uzgodnionych wymagań jest [SPECIFICATION
 | Numery | Obszar |
 | --- | --- |
 | 1-14 | Instalacja i dostęp |
-| 15-38 | Kamery, FTP i zapis |
+| 15-38 | Kamery i zapis RTSP |
 | 39-61 | Archiwum i eksport |
 | 62-80 | Rotacja i monitoring |
 
@@ -46,3 +46,12 @@ Decyzja użytkownika 1.1.3 (poz. 5): ręczny rollback/downgrade z konsoli i WWW,
 - Lokalny obszar ruchu, niezależny od semantycznej klasyfikacji: `motion_boxes.py`, retencja powiązana z archiwum; 320x180, 2 fps, maksymalnie 32 kamery; nie rekonstruuje brakujących historycznych współrzędnych. Wydajność i jakość na realnym sprzęcie niezmierzone.
 - Wycofano aktywne FTP: usunięto moduły kont i AppArmor FTP, API/GUI kont, polecenia konfiguratora; instalator i konfiguracja tylko RTSP. Zachowano historyczny schemat, migrację, niskopoziomowe szablony i odczyt stanu usług starszych wydań niezbędne dla zgodności/rollbacku; brak globalnego purge ProFTPD. `--resume` dla 0.2.x wymaga oryginalnego 1.1.3, potem `--update --rtsp-only`.
 - Weryfikacja: 41 testów celowanych zaliczonych po poprawkach (`test_camera_diagnosis_motion`, `test_recovery_migration`, `test_rtsp_only_deployment`, `test_security.PasswordFormTests`, `test_cli`, 4 scenariusze `test_web`), browser smoke i składnia JS/Bash. Wcześniejsza regresja 812: 804 zaliczone, 5 błędów/niepowodzeń, 3 pominięte; pięć problemów poprawiono i ponownie sprawdzono celowo. Pełna regresja finalnego drzewa i zmienione scenariusze GitHub Actions na Ubuntu 26.04 nieuruchomione. Statusów odbioru 80 pozycji nie podniesiono. Kandydat, nie wydanie zweryfikowane; nie zmieniano instalacji ani zdalnego repozytorium.
+
+### 1.1.5 - zmiany uzgodnione 2026-11-27
+
+- Jeden przycisk LED w podglądzie i ustawieniach: stan potwierdzony odczytem z kamery, odświeżenie po poleceniu; nieznany stan wymaga ponownego odczytu. Baichuan sprawdza również alternatywną komendę stanu. Zachowano uprawnienia i audyt.
+- Diagnoza talkback: unieważnienie starego cache, sprawdzanie głównego i dodatkowego RTSP, obsługa kierunku SDP na poziomie sesji; dla Reolink dodatkowa negocjacja natywnego Baichuan TalkAbility i IMA-ADPCM (8/16 kHz, mono). Zapisywany jest potwierdzony transport. Brak zgadywania według nazwy Lumus. Testy protokołu z symulowanym urządzeniem; fizyczne Lumus, Cloudflare i inne warianty firmware nadal wymagają odbioru.
+- Zgodnie z decyzją użytkownika wyłączono detekcję paczki, przekroczenia linii, wtargnięcia i pozostawionego przedmiotu; brak nowych zdarzeń z tych mechanizmów, usunięte opcje i kolory oraz filtrowanie starych wpisów w archiwum i nakładkach. Historyczne rekordy i nieaktywne definicje reguł pozostają dla zgodności bazy i rollbacku do czasu obowiązującej retencji; zapis nagrań i wyszukiwanie ruchu w obszarze bez zmian. Pozostałe klasy i prostokąty ruchu zachowano. Żółty ruch #f8ed36, pomarańczowy pojazd #ff7900, turkusowy opisany jako tablica rejestracyjna; zdarzenie ANPR tylko po rzeczywistym odczycie numeru, bez numeru w samym znaczniku, z retencją powiązaną z archiwum.
+- Weryfikacja: 55 testów celowanych (test_reolink_talk, test_talkback, test_camera_diagnosis_motion, test_camera_events, test_object_analytics, test_baichuan_control, test_local_analytics, test_local_objects, test_metadata_retention i 4 scenariusze test_web) zaliczonych; node --check, browser_smoke.js oraz rzeczywisty Chromium live_controls_browser.py (11 kamer i obie zmiany stanu LED) zaliczone. Nie wykonano pełnej regresji ani CI Ubuntu 26.04; nie podniesiono statusów odbioru K/C/N. Kandydat, nie zweryfikowane wydanie. Brak zmian zdalnego repozytorium i produkcji.
+
+Decyzja użytkownika (27.11.2026, 1.1.6): wycofanie obsługi FTP i migracji; tylko RTSP. Punkty 24–27 zastąpiono wymaganiami braku FTP; zgodny rollback pozostaje. Ramki detekcji bez tekstu, przełącznik osobisty wspólny dla Live i Archiwum.

@@ -59,6 +59,11 @@ with sync_playwright() as p:
     menu.get_by_role('button',name='Włącz LED').click()
     menu.get_by_role('button',name='Wyłącz LED').wait_for()
     assert page.evaluate('controlCalls.some(x=>x.method==="POST"&&x.data.control==="light"&&x.data.value===true)')
+    assert menu.get_by_role('button',name='Włącz LED',exact=True).count()==0
+    menu.get_by_role('button',name='Wyłącz LED',exact=True).click()
+    menu.get_by_role('button',name='Włącz LED',exact=True).wait_for()
+    assert menu.get_by_role('button',name='Wyłącz LED',exact=True).count()==0
+    assert page.evaluate('controlCalls.some(x=>x.method==="POST"&&x.data.control==="light"&&x.data.value===false)')
     page.evaluate("""() => {const host=document.createElement('div');host.id='manage-cameras';document.body.append(host);const panel=deviceControlPanel(cameras[0]);host.append(panel);panel.open=true;}""")
     panel=page.locator('#manage-cameras .device-controls')
     panel.get_by_role('slider',name='Zoom optyczny').wait_for()
