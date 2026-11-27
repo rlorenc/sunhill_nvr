@@ -10,31 +10,90 @@ from .camera_reboot import target
 from .camera_discovery import DEVICE, soap
 from . import camera_control, camera_settings, talkback, onvif_metadata, reolink_talk
 
-TTL=86400
 RETRY=120
 TARGET_SQL='SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth,sub_url FROM camera_details WHERE camera_id=?'
 
 
 def fingerprint(row):
-    return hashlib.sha256(json.dumps([2,*row],separators=(',',':')).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([3,*row],separators=(',',':')).encode()).hexdigest()
+
+
+def snapshot(db,cid):
+    return db.execute('SELECT fingerprint,checked,result_json FROM camera_diagnosis WHERE camera_id=?',(cid,)).fetchone()
 
 
 def cached(db,cid,row,now=None):
-    now=int(time.time()) if now is None else now
-    saved=db.execute('SELECT fingerprint,checked,result_json FROM camera_diagnosis WHERE camera_id=?',(cid,)).fetchone()
+    saved=snapshot(db,cid)
     if not saved or saved[0]!=fingerprint(row):return None
-    data=json.loads(saved[2]);age=now-saved[1]
-    if not 0<=age<(RETRY if data.get('partial') else TTL):return None
+    return json.loads(saved[2])
+
+
+def needs_probe(db,cid,row,now):
+    saved=snapshot(db,cid)
+    if not saved or saved[0]!=fingerprint(row):return True
+    data=json.loads(saved[2])
+    return bool(data.get('partial')) and (now<saved[1] or now-saved[1]>=RETRY)
+
+
+def merge_state(data,previous):
+    # A native camera may acknowledge a switch but never report its physical
+    # state. Preserve the last acknowledged command, explicitly labelled.
+    if previous and data.get('controls',{}).get('light_available') is True and type(data['controls'].get('light')) is not bool:
+        old=previous.get('controls',{})
+        if type(old.get('light')) is bool and old.get('light_source')=='command':
+            data['controls'].update(light=old['light'],light_source='command')
+    if type(data.get('controls',{}).get('light')) is bool:
+        data['controls'].setdefault('light_source','device')
     return data
 
 
-def persist(db,cid,row,data,now=None):
+def store(db,cid,row,data,now):
+    db.execute('INSERT INTO camera_diagnosis VALUES(?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET fingerprint=excluded.fingerprint,checked=excluded.checked,result_json=excluded.result_json',(cid,fingerprint(row),now,json.dumps(data,separators=(',',':'))))
+
+
+_ANY=object()
+def persist(db,cid,row,data,now=None,*,expected=_ANY):
     now=int(time.time()) if now is None else now
     with db:
         db.execute('BEGIN IMMEDIATE')
         if db.execute(TARGET_SQL,(cid,)).fetchone()!=row:return False
-        db.execute('INSERT INTO camera_diagnosis VALUES(?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET fingerprint=excluded.fingerprint,checked=excluded.checked,result_json=excluded.result_json',(cid,fingerprint(row),now,json.dumps(data,separators=(',',':'))))
+        if expected is not _ANY and snapshot(db,cid)!=expected:return False
+        merge_state(data,cached(db,cid,row))
+        store(db,cid,row,data,now)
     return True
+
+
+def update_control(db,cid,row,diagnosis,control,value,observed=None):
+    # Caller owns the transaction. Do not erase capabilities or discovery date.
+    if db.execute(TARGET_SQL,(cid,)).fetchone()!=row:return False
+    saved=snapshot(db,cid);data=cached(db,cid,row) or diagnosis
+    controls=data.setdefault('controls',{})
+    if control=='light':
+        controls.update(light=value if observed is None else observed,light_source='command' if observed is None else 'device')
+    elif control in ('zoom','focus','ir') and isinstance(controls.get(control),dict):controls[control]['value']=value
+    elif control in ('brightness','autofocus') and control in controls:controls[control]=value
+    for setting in data.get('settings',[]):
+        if setting['key']==control:setting['value']=value
+    if control=='floodlight_brightness' and 'brightness' in controls:controls['brightness']=value
+    if control=='ir_mode' and isinstance(controls.get('ir'),dict):controls['ir']['value']=value
+    store(db,cid,row,data,saved[1] if saved and saved[0]==fingerprint(row) else data.get('checked_at',int(time.time())))
+    return True
+
+
+def refresh_missing(db,*,should_stop=lambda:False,clock=time.time,monotonic=time.monotonic,budget=60):
+    from . import workers
+    candidates=[]
+    for (cid,) in db.execute('SELECT id FROM cameras WHERE enabled=1'):
+        row=db.execute(TARGET_SQL,(cid,)).fetchone()
+        if row and needs_probe(db,cid,row,int(clock())):
+            old=snapshot(db,cid)
+            candidates.append((old[1] if old and old[0]==fingerprint(row) else 0,cid,row,old))
+    start=monotonic()
+    for _,cid,row,old in sorted(candidates):
+        if should_stop() or not workers.writes_permitted() or monotonic()-start>=budget:return
+        result=diagnose(row)
+        if should_stop() or not workers.writes_permitted():return
+        persist(db,cid,row,result,int(clock()),expected=old)
 
 
 def probe_talkback(url):

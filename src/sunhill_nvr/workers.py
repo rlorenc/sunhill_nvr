@@ -346,6 +346,9 @@ def clocks_once(config,db, *, should_stop=lambda:False) -> None:
     clock_service.check(db,should_stop=should_stop)
 
 def streams_once(config,db, *, should_stop=lambda:False) -> None:
+    from . import device_diagnosis
+    device_diagnosis.refresh_missing(db,should_stop=should_stop)
+    if should_stop():return
     stream_health.check(db,should_stop=should_stop)
     if not should_stop() and stream_health.gateway_available():
         from . import camera_statistics

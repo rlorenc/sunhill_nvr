@@ -917,13 +917,34 @@ class Application:
                     else:control,value=camera_control.validate_command(body)
                 except camera_control.ControlError as exc:raise APIError('400 Bad Request',str(exc)) from None
             if method=='GET':
-                force=parse_qs(environ.get('QUERY_STRING','')).get('refresh')==['1']
+                query=parse_qs(environ.get('QUERY_STRING',''))
+                force=query.get('refresh')==['1']
                 result=None if force else device_diagnosis.cached(db,cid,row)
                 fresh=result is None
-                if fresh:result=device_diagnosis.diagnose(row)
+                if fresh:
+                    previous=device_diagnosis.snapshot(db,cid)
+                    result=device_diagnosis.diagnose(row)
                 self.current_admin(db,token)
                 if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
-                if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row or (fresh and workers.writes_permitted() and not device_diagnosis.persist(db,cid,row,result,result.get('checked_at'))):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row:raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                if fresh and workers.writes_permitted() and not device_diagnosis.persist(db,cid,row,result,result.get('checked_at'),expected=previous):
+                    result=device_diagnosis.cached(db,cid,row)
+                    if result is None:raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                # A menu open refreshes only the mutable LED state, never the
+                # whole inventory. Native cameras without readback retain ACK.
+                if not fresh and query.get('state')==['1'] and result.get('controls',{}).get('light_source')=='device':
+                    before=device_diagnosis.snapshot(db,cid)
+                    try:
+                        with camera_control.Reolink(row[0]) as client:observed=camera_control.read_light_state(client)
+                    except camera_control.ControlError:observed=None
+                    self.current_admin(db,token)
+                    if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
+                    if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row:raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                    if observed is not None and workers.writes_permitted():
+                        with db:
+                            db.execute('BEGIN IMMEDIATE')
+                            if device_diagnosis.snapshot(db,cid)==before:device_diagnosis.update_control(db,cid,row,result,'light',observed,observed)
+                        result=device_diagnosis.cached(db,cid,row) or result
                 return '200 OK',result if extended else {k:v for k,v in result.items() if k!='settings'},[]
             diagnosis=device_diagnosis.cached(db,cid,row) or device_diagnosis.diagnose(row)
             permitted=set(diagnosis.get('controls',{}))|{x['key'] for x in diagnosis.get('settings',[])}
@@ -936,8 +957,10 @@ class Application:
                     if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row or not security.may_access(db,user,cid,live=True):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
                     if extended and (control in camera_settings.FIELDS or control in ('ir_mode','floodlight_brightness')):camera_settings.apply(client,control,value)
                     else:camera_control.apply(client,control,value)
+                    observed=camera_control.read_light_state(client) if control=='light' else None
                 with db:
-                    db.execute('DELETE FROM camera_diagnosis WHERE camera_id=?',(cid,))
+                    db.execute('BEGIN IMMEDIATE')
+                    if not device_diagnosis.update_control(db,cid,row,diagnosis,control,value,observed):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
                     self.audit(db,user[0],'camera.control.'+control,'camera',cid)
                 return '200 OK',{'ok':True},[]
             except camera_control.ControlError as exc:raise APIError('422 Unprocessable Entity',str(exc)) from None

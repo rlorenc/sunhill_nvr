@@ -1,5 +1,12 @@
 # Wymagania Sunhill NVR
 
+## 1.1.7 - kandydat instalacyjny (baza c76da45)
+
+- Korekta na życzenie użytkownika (poz. 18/19): diagnoza sprzętu w SQLite nie wygasa po 24 godzinach i nie jest kasowana po poleceniach sterowania. Odcisk konfiguracji (RTSP/ONVIF, dane logowania, strumień pomocniczy) zmieniono do wersji 3, aby odświeżyć stare diagnozy jeden raz. Nowe kamery są sprawdzane po dodaniu przez GUI; istniejące i dodane przez API, bez GUI, są automatycznie diagnozowane przez worker stream-health od pierwszego uruchomienia (cykle 300 s, budżet planowania 60 s na cykl). Diagnozy częściowe są ponawiane z odstępem co najmniej 120 s, pełne jedynie przy zmianie konfiguracji lub ręcznej diagnozie. Zapis chroniony przed nadpisaniem wyniku spóźnioną diagnozą. Bez zmian schematu SQLite.
+- Lumus/Baichuan: pozytywna obsługa reflektora bez odczytu jego stanu już nie blokuje sterowania. Jeden przycisk: przy nieznanym stanie pierwsze jawne polecenie włączenia, następnie przełączenie według odczytu urządzenia lub ostatniego potwierdzonego polecenia (oznaczonego `light_source=command`, z wyjaśnieniem w podpowiedzi). Brak potwierdzenia nie zmienia stanu. Przy otwarciu menu odczyt tylko stanu LED, jeśli poprzednio kamera go raportowała; nie jest to ponowna pełna diagnoza. Kamera bez odczytu fizycznego nie daje gwarancji synchronizacji z automatycznym reflektorem lub innymi aplikacjami. Brak potwierdzonej obsługi nadal ukrywa przycisk. RLC-510A zachowuje dotychczasowe ograniczenia. Audio, AI, zapis RTSP i rollback bez zmian.
+- Weryfikacja: 102 testy celowane (101 regresyjnych i dodatkowy API LED bez readback), test DOM, Chromium live z 11 kamerami i stanem początkowo nieznanym, składnia JavaScript. Bez odbioru fizycznego Lumus, pełnej regresji i CI Ubuntu 26.04. Statusy K/C/N wszystkich 80 pozycji bez zmian. Brak publikacji zdalnej i zmian w produkcji.
+
+
 Jedynym nadrzędnym źródłem treści uzgodnionych wymagań jest [SPECIFICATION.md](SPECIFICATION.md), zawierający wszystkie pozycje 1-80 wraz z wyłączeniami z zakresu. Nie tworzymy drugiej niezależnej kopii specyfikacji. Numeracja jest trwała; nie wolno usuwać lub scalać wymagań bez decyzji użytkownika.
 
 | Numery | Obszar |

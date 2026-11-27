@@ -32,6 +32,7 @@ jobs:
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/live_layout_browser.py
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/archive_buffer_browser.py
           "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/detection_boxes_browser.py
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/sync_layout_browser.py
       - name: Run Python and Ubuntu configuration tests (including root-owned fixtures)
         run: sudo env SUNHILL_UBUNTU_INTEGRATION=1 PYTHONPATH="$PWD/src" /usr/bin/python3 -m unittest discover -s tests -v
       - name: Verify installer directory permissions with real service account

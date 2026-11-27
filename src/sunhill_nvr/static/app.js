@@ -476,7 +476,7 @@ function deviceControlPanel(camera){
   function disable(value){refresh.disabled=value;for(const el of fields.querySelectorAll('button,input,select'))el.disabled=value;}
   async function send(control,value){
     if(busy)return;busy=true;disable(true);status.textContent='Wysyłanie polecenia…';
-    try{await api(url,'POST',{control,value});invalidateDeviceInfo(camera);status.textContent='Kamera przyjęła polecenie. Odczytywanie stanu…';try{await read(true);}catch(error){status.textContent='Polecenie przyjęte; odczyt stanu nie powiódł się. '+error.message;}}
+    try{await api(url,'POST',{control,value});invalidateDeviceInfo(camera);status.textContent='Kamera przyjęła polecenie. Odczytywanie stanu…';try{await read();}catch(error){status.textContent='Polecenie przyjęte; odczyt stanu nie powiódł się. '+error.message;}}
     catch(error){status.textContent=error.message;}
     finally{busy=false;disable(false);}
   }
@@ -499,8 +499,7 @@ function deviceControlPanel(camera){
     if(result.device?.protocol)identity.textContent+=' · '+result.device.protocol;
     else if(result.device?.identity_source)identity.textContent+=' · '+result.device.identity_source;
     refresh.hidden=false;
-    if(c.light_available===true&&typeof c.light!=='boolean')fields.append(element('p','Stan LED nieznany. Ponów diagnozę.','muted'));
-    if(typeof c.light==='boolean')fields.append(button(c.light?'Wyłącz reflektor':'Włącz reflektor','light',!c.light));
+    if(typeof c.light==='boolean'||c.light_available===true){const led=button(c.light===true?'Wyłącz reflektor':'Włącz reflektor','light',c.light!==true);if(c.light_source==='command'||typeof c.light!=='boolean')led.title='Kamera nie raportuje stanu fizycznego; ostatnie potwierdzone polecenie lub pierwsze włączenie.';fields.append(led);}
     if(Number.isInteger(c.brightness))fields.append(range('Jasność reflektora (%)','brightness',{value:c.brightness,min:0,max:100}));
     if(c.ir&&Array.isArray(c.ir.options)&&c.ir.options.length){
       const label=element('label','Podczerwień','device-select-row');const select=element('select');select.setAttribute('aria-label','Podczerwień');
@@ -527,27 +526,27 @@ function deviceControlPanel(camera){
     }
   }
   async function load(force=false){if(busy)return;busy=true;disable(true);status.textContent='Wykrywanie możliwości kamery…';try{await read(force);}catch(error){identity.textContent='Model niedostępny przez API kamery';status.textContent=error.message;}finally{busy=false;disable(false);}}
-  refresh.addEventListener('click',()=>load(true));panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)load();});return panel;
+  refresh.addEventListener('click',()=>load(true));panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)load();});loadDeviceInfo(camera,false,true).catch(()=>{});return panel;
 }
 function liveLightControl(camera){
   const panel=element('div',null,'live-light');panel.hidden=true;
   let busy=false,request=0;const url='/api/cameras/'+camera.id+'/controls';
   function render(result){
     const c=result.controls||{};panel.replaceChildren();panel.hidden=typeof c.light!=='boolean'&&c.light_available!==true;if(panel.hidden)return;
-    const known=typeof c.light==='boolean';const button=element('button',known?(c.light?'Wyłącz LED':'Włącz LED'):'Odczytaj stan LED');button.type='button';panel.append(button);
+    const button=element('button',c.light===true?'Wyłącz LED':'Włącz LED');button.type='button';panel.append(button);
+    if(c.light_source==='command'||typeof c.light!=='boolean')button.title='Kamera nie raportuje stanu fizycznego; ostatnie potwierdzone polecenie lub pierwsze włączenie.';
     button.addEventListener('click',async()=>{
       if(busy)return;
-      if(!known){await refresh();return;}
       busy=true;request++;button.disabled=true;
-      try{await api(url,'POST',{control:'light',value:!c.light});invalidateDeviceInfo(camera);render(await loadDeviceInfo(camera,true));}
-      catch(error){render({controls:{light_available:true}});notify(error.message,'error');}
+      try{await api(url,'POST',{control:'light',value:c.light!==true});invalidateDeviceInfo(camera);render(await loadDeviceInfo(camera));}
+      catch(error){button.disabled=false;notify(error.message,'error');}
       finally{busy=false;}
     });
   }
   async function refresh(){
-    if(busy)return;const generation=++request;for(const b of panel.querySelectorAll('button'))b.disabled=true;
-    try{const result=await loadDeviceInfo(camera,true);if(generation===request)render(result);}
-    catch(error){if(generation===request&&!panel.hidden)render({controls:{light_available:true}});}
+    if(busy)return;const generation=++request;
+    try{await loadDeviceInfo(camera);const result=await api(url+'?state=1');if(generation===request)render(result);}
+    catch(error){if(generation===request)notify(error.message,'error');}
   }
   loadDeviceInfo(camera).then(result=>{if(!request)render(result);},()=>{});panel.refreshLight=refresh;return panel;
 }
@@ -725,7 +724,7 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     const volumeLabel=element('label','Głośność','live-volume');volumeLabel.hidden=!camera.enabled;volumeLabel.append(volume);actions.append(volumeLabel);
     volume.addEventListener('input',()=>{if(video?.video)video.video.volume=Number(volume.value);});
     const full=element('button','Pełny ekran');full.type='button';full.hidden=!camera.enabled;full.addEventListener('click',()=>{closeLiveMenu();const native=video?.video;if(document.fullscreenElement){document.exitFullscreen?.();}else if(card.requestFullscreen){card.requestFullscreen().catch(()=>{if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();else notify('Pełny ekran niedostępny.');});}else if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();});actions.append(full);
-    if(camera.enabled&&me&&me.role==='admin'){const lightControl=liveLightControl(camera);actions.append(lightControl);menu.addEventListener('click',()=>{if(!actions.hidden&&!lightControl.hidden)void lightControl.refreshLight();});const talk=element('button','Mów do kamery');talk.type='button';talk.hidden=true;loadDeviceInfo(camera).then(result=>{talk.hidden=result.talkback!==true;},()=>{});talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
+    if(camera.enabled&&me&&me.role==='admin'){const lightControl=liveLightControl(camera);actions.append(lightControl);menu.addEventListener('click',()=>{if(!actions.hidden)void lightControl.refreshLight();});const talk=element('button','Mów do kamery');talk.type='button';talk.hidden=true;loadDeviceInfo(camera).then(result=>{talk.hidden=result.talkback!==true;},()=>{});talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
     actions.append(element('p',cameraHealthText(camera),'live-health-detail'),diagnostics);card.append(actions,audioPrompt);installLiveLayoutHandles(card,camera);area.append(card);
   }
   if(!visible.length){
@@ -1409,7 +1408,7 @@ async function refreshAdmin() {
     const rediscover=element('button','Wykryj ponownie strumienie');rediscover.type='button';const discoveryStatus=element('p');discoveryStatus.setAttribute('role','status');details.append(rediscover,discoveryStatus);
     rediscover.addEventListener('click',async()=>{if(rediscover.disabled)return;if(!ip.input.value.trim()){notify('Podaj adres IP kamery.');return;}if(!window.confirm('Wykryć ponownie i zastąpić dotychczasowe adresy strumieni? Podaj aktualne dane logowania kamery, jeśli są wymagane.'))return;rediscover.disabled=true;discoveryStatus.textContent='Wykrywanie strumieni...';try{const result=await api(`/api/cameras/${camera.id}`,'PATCH',{ip:ip.input.value.trim(),username:cameraUser.input.value,password:cameraPassword.input.value});cameraPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,true,true).catch(()=>{});await refreshCameras();await refreshAdmin();notify(result.sub_configured?'Zaktualizowano oba strumienie.':'Zaktualizowano strumień główny; nie wykryto pomocniczego.');}catch(error){discoveryStatus.textContent=error.message;notify(error.message,'error');}finally{rediscover.disabled=false;}});
     const mode=element('select');for(const [value,text] of [['rtsp','RTSP'],['none','Bez zapisu']])mode.add(new Option(text,value));mode.value=data.recording;const modeLabel=element('label','Nagrywanie');modeLabel.append(mode);details.append(modeLabel);
-    const save=element('button','Zapisz kamerę');save.type='button';save.addEventListener('click',async()=>{try{const values={name:name.input.value,recording:mode.value};if(main.input.value)values.main_url=main.input.value;if(clear.checked)values.sub_url='';else if(sub.input.value)values.sub_url=sub.input.value;if(cameraUser.input.value||cameraPassword.input.value){values.username=cameraUser.input.value;values.password=cameraPassword.input.value;}await api(`/api/cameras/${camera.id}`,'PATCH',values);cameraPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,true,true).catch(()=>{});await refreshCameras();await refreshAdmin();notify('Kamera zapisana.');}catch(error){notify(error.message,'error');}});details.append(save);
+    const save=element('button','Zapisz kamerę');save.type='button';save.addEventListener('click',async()=>{try{const values={name:name.input.value,recording:mode.value};if(main.input.value)values.main_url=main.input.value;if(clear.checked)values.sub_url='';else if(sub.input.value)values.sub_url=sub.input.value;if(cameraUser.input.value||cameraPassword.input.value){values.username=cameraUser.input.value;values.password=cameraPassword.input.value;}await api(`/api/cameras/${camera.id}`,'PATCH',values);cameraPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,false,true).catch(()=>{});await refreshCameras();await refreshAdmin();notify('Kamera zapisana.');}catch(error){notify(error.message,'error');}});details.append(save);
     const enable=element('button',camera.enabled?'Wyłącz kamerę':'Włącz kamerę');enable.type='button';enable.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}`,'PATCH',{enabled:!camera.enabled});await refreshCameras();await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(enable);
     const onvif=camera.onvif;const clockDetails=element('details');clockDetails.append(element('summary','Kontrola czasu ONVIF'));
     const endpoint=labeledInput('Adres usługi ONVIF','url',onvif.url),onvifUser=labeledInput('Użytkownik ONVIF','text',onvif.username),onvifPassword=labeledInput(onvif.password_configured?'Nowe hasło ONVIF - puste zachowuje obecne':'Hasło ONVIF','password');
@@ -1613,8 +1612,8 @@ async function seekArchive(delta){
   if(records[index].id===record.id&&player.currentSrc&&!archiveSwitch)player.currentTime=offset;else playRecord(index,offset,false,paused);
 }
 for(const button of document.querySelectorAll('[data-seek]'))button.addEventListener('click',()=>{seekArchive(Number(button.dataset.seek)).catch(error=>notify(error.message,'error'));});
-$('camera-form').addEventListener('submit',async(event)=>{event.preventDefault();const button=$('camera-discover-submit'),status=$('camera-discover-status');if(button.disabled)return;button.disabled=true;status.textContent='Wykrywanie strumieni wideo...';try{const result=await api('/api/cameras','POST',formData(event.target));void api(`/api/cameras/${result.id}/settings?refresh=1`).catch(()=>{});event.target.reset();status.textContent=result.sub_configured?'Wykryto strumień główny i pomocniczy.':'Kamera dodana ze strumieniem głównym (brak potwierdzonego pomocniczego).';await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){status.textContent=e.message;notify(e.message);}finally{button.disabled=false;}});
-$('camera-manual-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const result=await api('/api/cameras','POST',formData(event.target));void api(`/api/cameras/${result.id}/settings?refresh=1`).catch(()=>{});event.target.reset();await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){notify(e.message);}});
+$('camera-form').addEventListener('submit',async(event)=>{event.preventDefault();const button=$('camera-discover-submit'),status=$('camera-discover-status');if(button.disabled)return;button.disabled=true;status.textContent='Wykrywanie strumieni wideo...';try{const result=await api('/api/cameras','POST',formData(event.target));event.target.reset();status.textContent=result.sub_configured?'Wykryto strumień główny i pomocniczy.':'Kamera dodana ze strumieniem głównym (brak potwierdzonego pomocniczego).';await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){status.textContent=e.message;notify(e.message);}finally{button.disabled=false;}});
+$('camera-manual-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const result=await api('/api/cameras','POST',formData(event.target));event.target.reset();await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){notify(e.message);}});
 $('user-form').addEventListener('submit',async(event)=>{event.preventDefault();try{await api('/api/users','POST',formData(event.target));event.target.reset();await refreshAdmin();notify('Użytkownik dodany.');}catch(e){notify(e.message);}});
 async function refreshUpgradeStatus(){
   const value=await api('/api/updates');const status=value.status;
@@ -1771,6 +1770,7 @@ function openSync(){
   const box=$('sync-cameras');box.replaceChildren();
   for(const camera of cameras){const label=element('label');const input=element('input');input.type='checkbox';input.value=String(camera.id);input.checked=true;label.append(input,document.createTextNode(camera.name));box.append(label);}
 }
+function setSyncStatus(item,text,state){if(item.status.textContent!==text)item.status.textContent=text;item.status.dataset.state=state;item.status.title=text;}
 function syncClock(epoch){
   return new Intl.DateTimeFormat('pl-PL',{timeZone:me.timezone,dateStyle:'short',timeStyle:'medium'}).format(new Date(epoch*1000));
 }
@@ -1788,14 +1788,14 @@ async function prepareSync(){
   if(generation!==syncGeneration)return;
   syncSeconds=initial;syncDay=day;
   for(let i=0;i<selected.length;i++){const camera=selected[i],list=lists[i].recordings;
-    const box=element('article',null,'camera');const title=element('div',camera.name,'camera-heading');const video=element('video');video.controls=true;video.playsInline=true;video.muted=true;video.className='sync-video';const status=element('p','Gotowe','camera-actions');box.append(title,video,status);grid.append(box);
+    const box=element('article',null,'camera sync-card');const header=element('div',null,'sync-card-heading');const title=element('strong',camera.name,'sync-card-name');title.title=camera.name;const status=element('span','Gotowe','sync-card-status');status.dataset.state='ready';header.append(title,status);const video=element('video');video.controls=true;video.playsInline=true;video.muted=true;video.className='sync-video';video.setAttribute('aria-label',camera.name+' - archiwum');box.append(header,video);grid.append(box);
     syncItems.push({id:camera.id,video,status,records:list,active:null});
   }
   $('sync-clock').textContent=syncClock(syncSeconds);
 }
 async function loadSyncDay(day){
   if(syncLoading)return;const generation=syncGeneration,items=syncItems.slice();syncLoading=day;
-  for(const item of items){item.active=null;item.video.pause();item.video.removeAttribute('src');item.status.textContent='Wczytywanie nagrań';}
+  for(const item of items){item.active=null;item.video.pause();item.video.removeAttribute('src');setSyncStatus(item,'Wczytywanie','loading');}
   try{
     const lists=await Promise.all(items.map(item=>archivePages(`/api/cameras/${item.id}/recordings?date=${encodeURIComponent(day)}`,'recordings',()=>generation===syncGeneration)));
     if(generation!==syncGeneration)return;
@@ -1811,14 +1811,14 @@ function tickSync(){
   if(day!==syncDay){loadSyncDay(day);return;}
   for(const item of syncItems){
     const record=item.records.find(r=>containsInstant(r,syncSeconds));
-    if(!record||record.utc_second){if(item.active!==null){item.video.pause();item.video.removeAttribute('src');item.active=null;}item.status.textContent=record?'Niejednoznaczny czas po zmianie czasu':'Brak nagrania';continue;}
+    if(!record||record.utc_second){if(item.active!==null){item.video.pause();item.video.removeAttribute('src');item.active=null;}setSyncStatus(item,record?'Niejednoznaczny czas':'Brak nagrania','gap');continue;}
     const offset=Math.max(0,syncSeconds-Date.parse(record.utc_first)/1000);
     if(item.active!==record.id){item.active=record.id;item.video.src=`/api/recordings/${record.id}/file`;item.video.addEventListener('loadedmetadata',()=>{if(syncPlaying&&item.active===record.id&&syncItems.includes(item)){item.video.currentTime=offset;item.video.play().catch(()=>{});}},{once:true});}
     else if(item.video.readyState>=1){if(Math.abs(item.video.currentTime-offset)>1.5)item.video.currentTime=offset;if(item.video.paused)item.video.play().catch(()=>{});}
-    item.status.textContent='Odtwarzanie';
+    if(item.video.error)setSyncStatus(item,'Błąd nagrania','error');else if(item.video.readyState<2||item.video.paused)setSyncStatus(item,'Wczytywanie','loading');else setSyncStatus(item,'Odtwarzanie','playing');
   }
 }
-function pauseSync(){if(syncPlaying)syncSeconds=syncBase+(performance.now()-syncStarted)/1000;syncPlaying=false;if(syncTimer)clearInterval(syncTimer);syncTimer=null;for(const item of syncItems)item.video.pause();}
+function pauseSync(){if(syncPlaying)syncSeconds=syncBase+(performance.now()-syncStarted)/1000;syncPlaying=false;if(syncTimer)clearInterval(syncTimer);syncTimer=null;for(const item of syncItems){item.video.pause();if(item.active!==null&&!item.video.error)setSyncStatus(item,'Pauza','ready');}}
 $('sync-load').addEventListener('click',async()=>{try{await prepareSync();notify('Widok przygotowany.');}catch(error){notify(error.message,'error');}});
 $('sync-play').addEventListener('click',()=>{if(syncPlaying)return;if(!syncItems.length){notify('Najpierw przygotuj widok.');return;}syncBase=syncSeconds;syncStarted=performance.now();syncPlaying=true;tickSync();syncTimer=setInterval(tickSync,500);});
 $('sync-pause').addEventListener('click',pauseSync);

@@ -218,6 +218,22 @@ class WebTests(unittest.TestCase):
         r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');self.assertNotIn(b'secret',b)
         r,b=self.call(url,'POST',{'control':'light','value':True},cookie,csrf);self.assertEqual(r['status'],'200 OK');apply.assert_called_once()
     db=database.open_db(self.file);self.assertEqual(db.execute("SELECT count(*) FROM audit_log WHERE action='camera.control.light'").fetchone()[0],1);db.close()
+ def test_led_without_readback_remembers_ack_and_does_not_rediscover(self):
+    from unittest.mock import patch
+    from sunhill_nvr.camera_control import ControlError
+    cookie,csrf=self.login();r,b=self.call('/api/cameras','POST',{'slug':'lumus','name':'Lumus','main_url':'rtsp://u:secret@192.168.1.30/main'},cookie,csrf);cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/controls'
+    def diagnosis(_):return {'controls':{'light_available':True},'settings':[],'talkback':True,'checked_at':100,'partial':False}
+    with patch('sunhill_nvr.device_diagnosis.diagnose',side_effect=diagnosis) as inspect,patch('sunhill_nvr.camera_control.Reolink'),patch('sunhill_nvr.camera_control.apply') as apply,patch('sunhill_nvr.camera_control.read_light_state',return_value=None) as state:
+        self.assertEqual(json.loads(self.call(url,cookie=cookie)[1])['controls'],{'light_available':True})
+        for value in (True,False):
+            self.assertEqual(self.call(url,'POST',{'control':'light','value':value},cookie,csrf)[0]['status'],'200 OK')
+            result=json.loads(self.call(url,cookie=cookie,extra={'QUERY_STRING':'state=1'})[1]);self.assertIs(result['controls']['light'],value);self.assertEqual(result['controls']['light_source'],'command');self.assertTrue(result['talkback']);self.assertEqual(result['checked_at'],100)
+        self.assertEqual(inspect.call_count,1);self.assertEqual(state.call_count,2)
+        apply.side_effect=ControlError('Rejected')
+        self.assertEqual(self.call(url,'POST',{'control':'light','value':True},cookie,csrf)[0]['status'],'422 Unprocessable Entity')
+        self.assertFalse(json.loads(self.call(url,cookie=cookie)[1])['controls']['light'])
+        self.assertFalse(json.loads(self.call(url,cookie=cookie,extra={'QUERY_STRING':'refresh=1'})[1])['controls']['light'])
+        self.assertEqual(inspect.call_count,2)
  def test_extended_camera_settings_permission_and_whitelist(self):
     from unittest.mock import patch
     cookie,csrf=self.login();r,b=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://u:secret@192.168.1.30/main'},cookie,csrf);cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/settings'

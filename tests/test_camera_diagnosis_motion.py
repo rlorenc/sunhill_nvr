@@ -9,7 +9,7 @@ class DiagnosisTests(unittest.TestCase):
         diag.filter_abilities(result,{'supportFLswitch':0,'supportAoAdjust':0,'supportIspHdr':1})
         self.assertEqual(result['controls'],{'ir':{}})
         self.assertEqual(result['settings'],[{'key':'hdr'}])
-    def test_cache_bound_to_config_and_expiry(self):
+    def test_cache_bound_to_config_not_time(self):
         with sqlite3.connect(':memory:') as db:
             security.initialize(db);database.migrate(db)
             db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
@@ -18,9 +18,39 @@ class DiagnosisTests(unittest.TestCase):
             row=db.execute(diag.TARGET_SQL,(1,)).fetchone()
             self.assertTrue(diag.persist(db,1,row,{'talkback':False},100))
             self.assertEqual(diag.cached(db,1,row,101),{'talkback':False})
-            self.assertIsNone(diag.cached(db,1,row,100+diag.TTL))
+            self.assertEqual(diag.cached(db,1,row,100+86400*365),{'talkback':False})
+            self.assertFalse(diag.needs_probe(db,1,row,100+86400*365))
             self.assertIsNone(diag.cached(db,1,('rtsp://other/live',*row[1:]),101))
             self.assertFalse(diag.persist(db,1,('rtsp://other/live',*row[1:]),{},102))
+
+    def test_worker_discovers_missing_once_and_retries_partial(self):
+        with sqlite3.connect(':memory:') as db:
+            security.initialize(db);database.migrate(db)
+            for cid in (1,2):
+                db.execute('INSERT INTO cameras VALUES(?,?,?,1)',(cid,'cam'+str(cid),'Cam'))
+                db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(?,?,'rtsp')",(cid,'rtsp://host/'+str(cid)))
+            db.commit()
+            with patch.object(diag,'diagnose',side_effect=[{'controls':{'light_available':True},'partial':False},{'controls':{},'partial':True},{'controls':{'ir':{}},'partial':False}]) as inspect,patch('sunhill_nvr.workers.writes_permitted',return_value=True):
+                diag.refresh_missing(db,clock=lambda:100);self.assertEqual(inspect.call_count,2)
+                diag.refresh_missing(db,clock=lambda:101);self.assertEqual(inspect.call_count,2)
+                diag.refresh_missing(db,clock=lambda:300);self.assertEqual(inspect.call_count,3)
+                diag.refresh_missing(db,clock=lambda:1000000);self.assertEqual(inspect.call_count,3)
+
+    def test_acknowledged_led_preserves_diagnosis_and_survives_refresh(self):
+        with sqlite3.connect(':memory:') as db:
+            security.initialize(db);database.migrate(db)
+            db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
+            db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://host/live','rtsp')");db.commit()
+            row=db.execute(diag.TARGET_SQL,(1,)).fetchone()
+            data={'controls':{'light_available':True},'talkback':True,'checked_at':100}
+            diag.persist(db,1,row,data,100);old=diag.snapshot(db,1)
+            with db:self.assertTrue(diag.update_control(db,1,row,data,'light',True))
+            saved=diag.cached(db,1,row);self.assertTrue(saved['controls']['light']);self.assertEqual(saved['controls']['light_source'],'command');self.assertTrue(saved['talkback']);self.assertEqual(saved['checked_at'],100)
+            self.assertFalse(diag.persist(db,1,row,{'controls':{}},101,expected=old))
+            diag.persist(db,1,row,{'controls':{'light_available':True},'talkback':True},102)
+            self.assertTrue(diag.cached(db,1,row)['controls']['light'])
+            with db:diag.update_control(db,1,row,data,'light',False,observed=False)
+            self.assertEqual(diag.cached(db,1,row)['controls'],{'light_available':True,'light':False,'light_source':'device'})
 
 class MotionTests(unittest.TestCase):
     def test_local_region_and_global_exposure(self):

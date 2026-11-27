@@ -304,3 +304,14 @@ def apply(client, control, value):
         client.set('PtzCtrl', {'channel': 0, 'op': 'ToPos', 'id': value})
     else:
         raise ControlError('Nieprawidłowe polecenie sterowania.')
+
+
+def read_light_state(client):
+    """Read actual state, never infer it from a scheduling flag."""
+    try:
+        if isinstance(client,Baichuan):
+            value=client.light().get('light')
+            return value if type(value) is bool else None
+        row=obj(obj(client.get('GetWhiteLed'),'value'),'WhiteLed')
+        return bool(row['state']) if numeric(row.get('state'),0,1) else None
+    except (ControlError,ProtocolError,OSError,ValueError):return None
