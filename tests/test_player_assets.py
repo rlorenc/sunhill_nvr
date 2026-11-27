@@ -48,6 +48,39 @@ console.log(JSON.stringify([
         result = subprocess.run(['node','-'],input=script,text=True,capture_output=True,check=True)
         self.assertEqual(json.loads(result.stdout), [[19.9,.95,10],[17.5,1,10],[16,1.05,10],[17.5,1,10],[17.5,1,10],[11,1.05,10],[13,1,10],[13,1.05,10],[17,1,10],'smooth'])
 
+    @unittest.skipUnless(shutil.which('node'), 'Node required for JS execution')
+    def test_substream_burst_buffer_does_not_periodically_seek(self):
+        script=assets.patch_rtc(FIXTURE)+'''
+const state={sunhillBufferTarget:4.5,plays:0,play(){this.plays++;this.video.paused=false;}};
+let ranges=[[0,4]],seeks=0,time=0;
+const video={paused:false,readyState:4,seeking:false,playbackRate:1,src:'blob:one',pause(){this.paused=true;},
+  get currentTime(){return time;},set currentTime(v){time=v;seeks++;},
+  buffered:{get length(){return ranges.length;},start:i=>ranges[i][0],end:i=>ranges[i][1]}};
+state.video=video;
+function sample(){update.call(state,ranges.at(-1)[1]);return [video.paused,state.sunhillBufferWaiting,state.plays,seeks,time,video.playbackRate];}
+const results=[sample()];
+ranges=[[0,8]];results.push(sample());
+for(let i=1;i<=6;i++){time=i*4;ranges=[[0,8+i*4]];results.push(sample());}
+// Buffer starvation: hold rather than chase the end of each 4-second burst.
+time=31.9;video.readyState=2;results.push(sample());ranges=[[0,36]];results.push(sample());ranges=[[0,40]];results.push(sample());
+// A true gap can be crossed only once when a contiguous new range is ready.
+time=41;ranges=[[0,40],[44,48]];results.push(sample());ranges=[[0,40],[44,52]];results.push(sample());
+// New MSE source must prime again even on the same video element.
+video.src='blob:two';time=0;ranges=[[0,4]];results.push(sample());
+console.log(JSON.stringify(results));
+'''
+        out=subprocess.run(['node','-'],input=script,text=True,capture_output=True,check=True)
+        result=json.loads(out.stdout)
+        self.assertEqual(result[0],[True,True,0,0,0,1])
+        self.assertEqual(result[1],[False,False,1,0,0,1])
+        self.assertTrue(all(row[:4]==[False,False,1,0] for row in result[2:8]))
+        self.assertEqual(result[8][:4],[True,True,1,0])
+        self.assertEqual(result[9][:4],[True,True,1,0])
+        self.assertEqual(result[10][:4],[False,False,2,0])
+        self.assertEqual(result[11][:4],[True,True,2,0])
+        self.assertEqual(result[12],[False,False,3,1,47.5,1])
+        self.assertEqual(result[13][:4],[True,True,3,1])
+
     def test_loopback_only_and_dependency_import(self):
         response = MagicMock(status=200)
         response.getheader.return_value='identity'

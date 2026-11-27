@@ -67,69 +67,14 @@ class WebTests(unittest.TestCase):
     r,b=self.call('/api/login','POST',{'username':'metaviewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0];vcsrf=json.loads(b)['csrf']
     cfg={'enabled':True,'retention_days':7,'rules':[]}
     self.assertEqual(self.call(settings,'PATCH',cfg,cookie)[0]['status'],'403 Forbidden');self.assertEqual(self.call(settings,'PATCH',cfg,viewer,vcsrf)[0]['status'],'403 Forbidden');self.assertEqual(self.call(settings,'PATCH',cfg,cookie,csrf)[0]['status'],'200 OK')
-    db=database.open_db(self.file);analytics.snapshot(db,cid,'rtsp://192.168.1.40/main',now,[{'id':'1','kind':'person','box':[.2,.3,.1,.1]}],'session',analytics.RuleEngine(),received=now);db.close()
+    db=database.open_db(self.file);analytics.snapshot(db,cid,'rtsp://192.168.1.40/main',now,[{'id':'1','kind':'person','box':[.2,.3,.1,.1]}],'session',received=now);db.close()
     self.assertEqual(json.loads(self.call('/api/metadata/live',cookie=viewer)[1]),{'cameras':{},'motion':{}});self.assertEqual(self.call(history,cookie=viewer,extra={'QUERY_STRING':f'at_ms={now}'})[0]['status'],'403 Forbidden')
     db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES(?,?,0)',(uid,cid));db.commit();db.close()
     self.assertIn(str(cid),json.loads(self.call('/api/metadata/live',cookie=viewer)[1])['cameras']);self.assertEqual(len(json.loads(self.call(history,cookie=viewer,extra={'QUERY_STRING':f'at_ms={now}'})[1])['frames']),1)
     self.assertEqual(self.call(settings,'PATCH',{'enabled':True,'retention_days':0,'rules':[]},cookie,csrf)[0]['status'],'400 Bad Request')
-    from sunhill_nvr import face_profiles
-    db=database.open_db(self.file);ident=face_profiles.enroll(db,'sample profile',[[1]+[0]*127],model_id='a'*64);db.close()
-    self.assertEqual(json.loads(self.call(settings,'PATCH',{'enabled':True,'rules':[],'source_mode':'local'},cookie,csrf)[1])['source_mode'],'local')
-    self.assertEqual(json.loads(self.call(settings,'PATCH',{'enabled':True,'rules':[]},cookie,csrf)[1])['source_mode'],'local')
-    db=database.open_db(self.file);stamp=now+1
-    with self.assertRaises(InterruptedError):analytics.snapshot(db,cid,'rtsp://192.168.1.40/main',stamp,[],'old',analytics.RuleEngine(),received=stamp,expected_mode='auto')
-    analytics.snapshot(db,cid,'rtsp://192.168.1.40/main',stamp,[{'id':'2','kind':'face','box':[.2,.3,.1,.1],'face_profile':ident}],'new',analytics.RuleEngine(),received=stamp,source='local',expected_mode='local');db.close()
-    for path,extra in [('/api/metadata/live',{}),(history,{'QUERY_STRING':f'at_ms={stamp}'})]:
-        self.assertIn('sample profile',self.call(path,cookie=cookie,extra=extra)[1].decode());body=self.call(path,cookie=viewer,extra=extra)[1].decode();self.assertNotIn('sample profile',body);self.assertNotIn(ident,body)
-    db=database.open_db(self.file);face_profiles.remove(db,ident);db.close()
-    self.assertNotIn('sample profile',self.call(history,cookie=cookie,extra={'QUERY_STRING':f'at_ms={stamp}'})[1].decode())
-
- def test_analytics_admin_inventory_and_delete(self):
-    from sunhill_nvr import face_profiles
-    from unittest.mock import patch
-    cookie,csrf=self.login();url='/api/admin/analytics'
-    db=database.open_db(self.file);ident=face_profiles.enroll(db,'test profile',[[1]+[0]*127],model_id='a'*64);security.create_user(db,'profileviewer','password-for-viewer','viewer');db.close()
-    r,b=self.call('/api/login','POST',{'username':'profileviewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0];vcsrf=json.loads(b)['csrf']
-    delete=url+'/faces/'+ident
-    with patch('sunhill_nvr.analytics_models.status',return_value={'coco':{'state':'missing'}}) as status:
-        self.assertEqual(self.call(url)[0]['status'],'401 Unauthorized')
-        self.assertEqual(self.call(url,cookie=viewer)[0]['status'],'403 Forbidden');status.assert_not_called()
-        r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b),{'models':{'coco':{'state':'missing'}},'profiles':[{'id':ident,'label':'test profile','samples':1}]})
-    self.assertEqual(self.call(delete,'DELETE',cookie=cookie)[0]['status'],'403 Forbidden')
-    self.assertEqual(self.call(delete,'DELETE',cookie=viewer,csrf=vcsrf)[0]['status'],'403 Forbidden')
-    self.assertEqual(self.call(delete,'DELETE',cookie=cookie,csrf=csrf,extra={'HTTP_ORIGIN':'https://foreign.example'})[0]['status'],'403 Forbidden')
-    self.assertEqual(self.call(delete,'DELETE',cookie=cookie,csrf=csrf)[0]['status'],'200 OK')
-    self.assertEqual(self.call(delete,'DELETE',cookie=cookie,csrf=csrf)[0]['status'],'404 Not Found')
-    db=database.open_db(self.file);self.assertEqual(face_profiles.inventory(db),[]);self.assertEqual(db.execute('SELECT count(*) FROM face_templates').fetchone(),(0,));self.assertEqual(db.execute("SELECT user_id FROM audit_log WHERE action='face.remove'").fetchone(),(self.uid,));db.close()
- def test_face_web_enroll_replace_lan_acl_and_rollback(self):
-    import base64,contextlib
-    from unittest.mock import patch
-    from sunhill_nvr import face_profiles
-    cookie,csrf=self.login();url='/api/admin/analytics/faces'
-    self.app.trust_client_header=True
-    lan={'REMOTE_ADDR':'127.0.0.1','HTTP_HOST':'192.168.0.7','HTTP_X_SUNHILL_LAN_ORIGIN':'http://192.168.0.7','HTTP_X_SUNHILL_CLIENT_IP':'192.168.0.8','HTTP_ORIGIN':'http://192.168.0.7'}
-    db=database.open_db(self.file);security.create_user(db,'faceviewer','password-for-viewer','viewer');db.close()
-    r,b=self.call('/api/login','POST',{'username':'faceviewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0];vcsrf=json.loads(b)['csrf']
-    sample=base64.b64encode(b'\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR'+(100).to_bytes(4,'big')*2+b'\x00'*9).decode()
-    payload={'label':'Sample','consent':True,'images':[sample]};v1=[1]+[0]*127;v2=[0,1]+[0]*126
-    with patch('sunhill_nvr.analytics_models.provisioning_lock',side_effect=lambda **kw:contextlib.nullcontext()) as lock,patch('sunhill_nvr.face_profiles.web_features',return_value=('a'*64,[v1])) as features:
-        self.assertEqual(self.call(url,'POST',payload)[0]['status'],'401 Unauthorized')
-        self.assertEqual(self.call(url,'POST',payload,cookie)[0]['status'],'403 Forbidden')
-        self.assertEqual(self.call(url,'POST',payload,viewer,vcsrf)[0]['status'],'403 Forbidden')
-        self.assertEqual(self.call(url,'POST',payload,cookie,csrf,extra={'HTTP_ORIGIN':'https://foreign.example'})[0]['status'],'403 Forbidden')
-        self.assertEqual(self.call(url,'POST',{**payload,'consent':False},cookie,csrf)[0]['status'],'422 Unprocessable Entity')
-        self.assertEqual(self.call(url,'POST',{**payload,'images':['invalid']},cookie,csrf)[0]['status'],'422 Unprocessable Entity');features.assert_not_called()
-        self.assertEqual(self.call(url,'POST',payload,cookie,csrf,extra={'CONTENT_LENGTH':str(face_profiles.MAX_UPLOAD_BODY+1)})[0]['status'],'413 Payload Too Large')
-        r,b=self.call(url,'POST',payload,cookie,csrf,extra=lan);self.assertEqual(r['status'],'201 Created');ident=json.loads(b)['id'];lock.assert_called_with(create=False,nonblocking=True)
-        target=url+'/'+ident
-        features.side_effect=ValueError('bad second photo')
-        self.assertEqual(self.call(target,'PUT',{**payload,'label':'Bad','images':[sample,sample]},cookie,csrf)[0]['status'],'422 Unprocessable Entity')
-        db=database.open_db(self.file);self.assertEqual(face_profiles.inventory(db),[{'id':ident,'label':'Sample','samples':1}]);self.assertEqual(face_profiles.active_templates(db,'a'*64),[(ident,v1)]);db.close()
-        features.side_effect=None;features.return_value=('a'*64,[v2,v1]);r,b=self.call(target,'PUT',{**payload,'label':'Updated','images':[sample,sample]},cookie,csrf);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b),{'id':ident})
-        self.assertEqual(self.call(url+'/'+'b'*32,'PUT',payload,cookie,csrf)[0]['status'],'404 Not Found')
-        self.assertEqual(self.call(target,'PUT',payload,viewer,vcsrf)[0]['status'],'403 Forbidden')
-        features.return_value=('b'*64,[v1]);self.assertEqual(self.call(target,'PUT',payload,cookie,csrf)[0]['status'],'422 Unprocessable Entity')
-    db=database.open_db(self.file);self.assertEqual(face_profiles.inventory(db),[{'id':ident,'label':'Updated','samples':2}]);self.assertEqual(face_profiles.active_templates(db,'a'*64),[(ident,v2),(ident,v1)]);self.assertEqual(db.execute("SELECT action,user_id FROM audit_log WHERE object_type='face-profile' ORDER BY id").fetchall(),[('face.enroll',self.uid),('face.update',self.uid)]);db.close()
+    self.assertEqual(self.call(settings,'PATCH',{'enabled':True,'rules':[],'source_mode':'local'},cookie,csrf)[0]['status'],'400 Bad Request')
+    self.assertEqual(self.call('/api/admin/analytics',cookie=cookie)[0]['status'],'404 Not Found')
+    self.assertIn('boxes',json.loads(self.call(f'/api/cameras/{cid}/native-capabilities',cookie=cookie)[1])['supported'])
  def test_firmware_web_requires_csrf_hash_identity_and_admin(self):
     import hashlib
     from urllib.parse import urlencode
@@ -767,7 +712,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.call(url,'POST',payload,cookie)[0]['status'],'403 Forbidden')
         self.assertEqual(self.call(url,'POST',payload,viewer,vcsrf)[0]['status'],'403 Forbidden')
         self.assertEqual(self.call(url,'POST',{**payload,'duration':11},cookie,csrf)[0]['status'],'400 Bad Request');scan.assert_not_called()
-        db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES (?,?,0)',(uid,cid));db.commit();db.close()
+        db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES (?,?,0)',(uid,cid));from sunhill_nvr import native_capabilities
+        native_capabilities.record(db,cid,{'boxes'});db.commit();db.close()
         r,b=self.call(url,'POST',payload,viewer,vcsrf);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b),result);scan.assert_called_once()
         file.write_bytes(b'changed fixture');self.assertEqual(self.call(url,'POST',payload,cookie,csrf)[0]['status'],'404 Not Found');scan.assert_called_once()
  def test_archive_media_info_checks_access_and_file_identity(self):

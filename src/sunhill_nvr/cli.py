@@ -225,16 +225,6 @@ def main(argv=None) -> int:
     sub.add_parser('prepare-storage')
     firmware=sub.add_parser('camera-firmware',help='Local administrator: ONVIF firmware upload with explicit vendor identity and SHA-256')
     firmware.add_argument('camera_id',type=int);firmware.add_argument('file',type=Path);firmware.add_argument('--sha256',required=True);firmware.add_argument('--manufacturer',required=True);firmware.add_argument('--model',required=True);firmware.add_argument('--hardware',required=True);firmware.add_argument('--confirm',action='store_true');firmware.add_argument('--expected-version',help='Exact target firmware version for read-only verification after upload')
-    model=sub.add_parser('analytics-model-install',help='Install a trusted local ONNX model after SHA-256 and inference checks')
-    model.add_argument('kind',choices=('coco','face-detector','face-recognizer'));model.add_argument('file',type=Path);model.add_argument('--sha256',required=True)
-    check=sub.add_parser('analytics-model-status',help='Inspect local model availability and optionally run actual inference checks')
-    check.add_argument('--verify',action='store_true')
-    fetch=sub.add_parser('analytics-model-fetch-faces',help='Download pinned OpenCV Zoo YuNet/SFace models (MIT/Apache-2.0)')
-    fetch.add_argument('--accept-licenses',action='store_true');fetch.add_argument('--replace',action='store_true')
-    faces=sub.add_parser('face-enroll',help='Enroll a consenting known subject; no source image is copied into NVR')
-    faces.add_argument('label');faces.add_argument('images',nargs='+',type=Path);faces.add_argument('--consent',action='store_true')
-    sub.add_parser('face-list',help='List enrolled profiles (local administrator only)')
-    forget=sub.add_parser('face-remove',help='Remove an enrolled profile and suppress its label in historical results');forget.add_argument('profile_id')
     args=parser.parse_args(argv)
     config=load(Path(args.config))
     if args.command in ('init','complete-setup'):
@@ -258,48 +248,6 @@ def main(argv=None) -> int:
         with contextlib.closing(database.open_db(config.database)) as db:
             verify_rtsp_recorders(db,probe=stream_health.probe)
         return 0
-    if args.command=='analytics-model-fetch-faces':
-        if os.geteuid()!=0 or not args.accept_licenses:raise ValueError('Wymagany lokalny root i akceptacja licencji modeli')
-        if not workers.writes_permitted():raise ValueError('Trwa konserwacja NVR')
-        from . import analytics_models
-        with analytics_models.provisioning_lock():
-            with contextlib.closing(database.open_db(config.database)) as db:
-                if db.execute('SELECT count(*) FROM face_profiles').fetchone()[0]:raise ValueError('Usuń profile twarzy przed wymianą modelu')
-            for kind,path in analytics_models.fetch_face_models(accept_licenses=True,replace=args.replace).items():print(kind,path)
-        return 0
-    if args.command=='analytics-model-status':
-        if os.geteuid()!=0:raise ValueError('Wymagany lokalny root')
-        import json
-        from . import analytics_models
-        result=analytics_models.status(verify=args.verify)
-        print(json.dumps(result,ensure_ascii=False))
-        return int(args.verify and any(v.get('inference')!='passed' for v in result.values()))
-    if args.command in ('analytics-model-install','face-enroll','face-list','face-remove'):
-        if os.geteuid()!=0:raise ValueError('Wymagany lokalny root')
-        if args.command!='face-list' and not workers.writes_permitted():raise ValueError('Trwa konserwacja NVR')
-        if args.command=='analytics-model-install':
-            from . import analytics_models
-            # Existing embeddings are model-specific. Do not silently invalidate them.
-            with analytics_models.provisioning_lock():
-                if args.kind!='coco':
-                    with contextlib.closing(database.open_db(config.database)) as db:
-                        if db.execute('SELECT count(*) FROM face_profiles').fetchone()[0]:raise ValueError('Usuń profile twarzy przed wymianą modelu')
-                print(analytics_models.install(args.kind,args.file,args.sha256));return 0
-        from . import face_profiles
-        with contextlib.closing(database.open_db(config.database)) as db:
-            if args.command=='face-list':
-                import json
-                print(json.dumps(face_profiles.labels(db),ensure_ascii=False));return 0
-            if args.command=='face-remove':
-                if not face_profiles.remove(db,args.profile_id):raise ValueError('Nieznany profil')
-                return 0
-            if not args.consent or not 1<=len(args.images)<=face_profiles.MAX_TEMPLATES:raise ValueError('Wymagana zgoda osoby i od 1 do 5 zdjęć')
-            import cv2,numpy
-            from . import analytics_models
-            with analytics_models.provisioning_lock():
-                recognizer=face_profiles.Recognizer(cv2,numpy)
-                features=[recognizer.enrollment_image(image) for image in args.images]
-                print(face_profiles.enroll(db,args.label,features,model_id=recognizer.model_id));return 0
     if args.command=='camera-firmware':
         from . import camera_firmware,limits
         if os.geteuid()!=0 or not args.confirm:raise ValueError('Wymagany lokalny root i --confirm')
@@ -339,8 +287,8 @@ def main(argv=None) -> int:
     if args.command=='health-worker':
         if args.once:periodic(config,workers.health_once,60,once=True);return 0
         import threading
-        from . import camera_events,object_analytics,tamper,motion_boxes
-        stop=threading.Event();threads=[threading.Thread(target=worker.supervise,args=(config,stop),daemon=True) for worker in (camera_events,object_analytics,tamper,motion_boxes)]
+        from . import camera_events,object_analytics
+        stop=threading.Event();threads=[threading.Thread(target=worker.supervise,args=(config,stop),daemon=True) for worker in (camera_events,object_analytics)]
         for thread in threads:thread.start()
         try:periodic(config,workers.health_once,60)
         finally:

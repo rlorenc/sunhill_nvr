@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory() as directory:
         $('sync-start').value='2026-11-27T12:00:00';
         for(const camera of cameras){const label=element('label'),input=element('input');input.type='checkbox';input.value=camera.id;input.checked=true;label.append(input,document.createTextNode(camera.name));$('sync-cameras').append(label);}
         api=async url=>url==='/api/time/resolve'?{utc:'2026-11-27T11:00:00Z'}:{recordings:url.includes('/11/recordings')?[]:[{id:Number(url.match(/cameras\\/(\\d+)/)[1]),utc_first:'2026-11-27T11:00:00Z',utc_second:null,duration:15}]};
-        window.prepare=prepareSync;''')
+        window.prepare=prepareSync;window.setSyncApi=callback=>{api=callback;};void 0;''')
         page.evaluate('prepare()');cards=page.locator('#sync-grid .sync-card');assert cards.count()==11
         for card in cards.all():
             video=card.locator('video').bounding_box(); box=card.bounding_box(); header=card.locator('.sync-card-heading').bounding_box()
@@ -37,8 +37,31 @@ with tempfile.TemporaryDirectory() as directory:
         assert cards.last.locator('.sync-card-status').inner_text()=='Brak nagrania'
         page.locator('#sync-pause').click();assert cards.first.locator('.sync-card-status').inner_text()=='Pauza'
         assert page.evaluate("Array.from(document.querySelectorAll('#sync-grid video')).every(v=>v.paused)")
+        # All cameras share one clock, including paused seeking and gaps.
+        page.locator('[data-sync-seek="10"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>v.paused&&v.currentTime>=10&&v.currentTime<14)")
+        page.locator('[data-sync-seek="-10"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>v.paused&&v.currentTime<4)")
+        page.locator('[data-sync-seek="60"]').click()
+        page.wait_for_function("document.querySelectorAll('.sync-card-status[data-state=gap]').length===11")
+        page.locator('[data-sync-seek="-60"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>v.paused&&v.readyState>=1&&v.currentTime<4)")
+        page.locator('#sync-play').click()
+        page.wait_for_function("document.querySelectorAll('.sync-card-status[data-state=playing]').length===10")
+        page.locator('[data-sync-seek="10"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>!v.paused&&v.currentTime>=10)")
+        page.locator('#sync-pause').click()
+        # Cross a local midnight while paused, and return to previous day's files.
+        page.evaluate("""() => {window.setSyncApi(async url=>url==='/api/time/resolve'?{utc:'2026-11-27T22:59:55Z'}:{recordings:url.includes('/11/recordings')?[]:[{id:Number(url.match(/cameras\\/(\\d+)/)[1])+(url.includes('2026-11-28')?100:0),utc_first:url.includes('2026-11-28')?'2026-11-27T23:00:00Z':'2026-11-27T22:59:45Z',utc_second:null,duration:15}]});document.getElementById('sync-start').value='2026-11-27T23:59:55';}""")
+        page.evaluate('prepare()')
+        page.locator('[data-sync-seek="10"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>v.paused&&v.readyState>=1&&Math.abs(v.currentTime-5)<.2)")
+        assert '28.11' in page.locator('#sync-clock').inner_text()
+        page.locator('[data-sync-seek="-10"]').click()
+        page.wait_for_function("Array.from(document.querySelectorAll('#sync-grid video')).slice(0,10).every(v=>v.paused&&v.readyState>=1&&Math.abs(v.currentTime-10)<.2)")
+        assert '27.11' in page.locator('#sync-clock').inner_text()
         page.set_viewport_size({'width':390,'height':844});page.wait_for_timeout(200)
         assert page.evaluate('document.documentElement.scrollWidth')<=390
         assert cards.first.bounding_box()['width']<=390
         assert not errors,errors
-        browser.close();print('Chromium sync archive: 11 cards, compact geometry, real MP4, missing recording, pause and mobile width OK')
+        browser.close();print('Chromium sync archive: 11 cards, compact geometry, real MP4, missing recording, pause, synchronized skips, gaps and mobile width OK')

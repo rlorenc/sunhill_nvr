@@ -1,5 +1,7 @@
 # Wymagania Sunhill NVR
 
+Decyzja użytkownika (27.11.2026, 1.1.9, poz. 18/19/48): automatyczny start podglądu po wejściu i odświeżeniu, płynność niskiej jakości, krótki status REC oraz wspólne skoki -60/-10/+10/+60 s w archiwum wielu kamer.
+
 ## 1.1.7 - kandydat instalacyjny (baza c76da45)
 
 - Korekta na życzenie użytkownika (poz. 18/19): diagnoza sprzętu w SQLite nie wygasa po 24 godzinach i nie jest kasowana po poleceniach sterowania. Odcisk konfiguracji (RTSP/ONVIF, dane logowania, strumień pomocniczy) zmieniono do wersji 3, aby odświeżyć stare diagnozy jeden raz. Nowe kamery są sprawdzane po dodaniu przez GUI; istniejące i dodane przez API, bez GUI, są automatycznie diagnozowane przez worker stream-health od pierwszego uruchomienia (cykle 300 s, budżet planowania 60 s na cykl). Diagnozy częściowe są ponawiane z odstępem co najmniej 120 s, pełne jedynie przy zmianie konfiguracji lub ręcznej diagnozie. Zapis chroniony przed nadpisaniem wyniku spóźnioną diagnozą. Bez zmian schematu SQLite.
@@ -62,3 +64,7 @@ Decyzja użytkownika 1.1.3 (poz. 5): ręczny rollback/downgrade z konsoli i WWW,
 - Weryfikacja: 55 testów celowanych (test_reolink_talk, test_talkback, test_camera_diagnosis_motion, test_camera_events, test_object_analytics, test_baichuan_control, test_local_analytics, test_local_objects, test_metadata_retention i 4 scenariusze test_web) zaliczonych; node --check, browser_smoke.js oraz rzeczywisty Chromium live_controls_browser.py (11 kamer i obie zmiany stanu LED) zaliczone. Nie wykonano pełnej regresji ani CI Ubuntu 26.04; nie podniesiono statusów odbioru K/C/N. Kandydat, nie zweryfikowane wydanie. Brak zmian zdalnego repozytorium i produkcji.
 
 Decyzja użytkownika (27.11.2026, 1.1.6): wycofanie obsługi FTP i migracji; tylko RTSP. Punkty 24–27 zastąpiono wymaganiami braku FTP; zgodny rollback pozostaje. Ramki detekcji bez tekstu, przełącznik osobisty wspólny dla Live i Archiwum.
+
+### 1.2.0 - decyzja użytkownika
+
+Wyłącznie dane natywne kamer, żadnego lokalnego dekodowania dla detekcji AI, OCR, twarzy, tablic, ruchu i sabotażu, ani generowania zastępczych współrzędnych. W ustawieniach tylko potwierdzone możliwości; wyszukiwanie obszarowe wyłącznie na otrzymanych i zapisanych współrzędnych. Zastępuje wcześniejsze decyzje o lokalnym fallbacku i profilach twarzy (poz. 18, 19, 39, 40, 50). Zachować nagrywanie, retencję archiwum, niezależną diagnostykę dostępności i rollback.

@@ -188,19 +188,6 @@ def media_paths(root):
     return {key:config[key] for key in ('archive','exports','staging')}
 
 
-def ensure_analytics_dependencies(*,run=subprocess.run):
-    check=['/usr/bin/python3','-c','import cv2,numpy; assert hasattr(cv2, "dnn")']
-    packages=['python3-opencv','opencv-data','tesseract-ocr','tesseract-ocr-eng']
-    def ready():
-        if run(check,capture_output=True).returncode!=0:return False
-        try:result=run(['/usr/bin/tesseract','--list-langs'],capture_output=True,text=True)
-        except FileNotFoundError:return False
-        return result.returncode==0 and 'eng' in result.stdout.splitlines()
-    if ready():return
-    run(['/usr/bin/apt-get','update'],check=True)
-    run(['/usr/bin/apt-get','install','-y',*packages],check=True)
-    if not ready():raise RuntimeError('Local analytics dependencies unavailable after installation')
-
 def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print,repair=False,rtsp_only=False):
     old=active_version(root)
     # New recording-only contract: do not attempt a conversion of old setups.
@@ -251,9 +238,6 @@ def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print
             listed.add(relative)
         for path in (source/'src/sunhill_nvr').rglob('*'):
             if path.is_symlink() or (path.is_file() and str(path.relative_to(source)) not in listed):raise ValueError('Unexpected repair application member: '+str(path))
-        if rtsp_only:
-            emit('Checking/installing local analytics dependencies before stopping services...')
-            ensure_analytics_dependencies(run=run)
         timer='sunhill-upgrade-apply.timer'
         run(['/usr/bin/systemctl','stop',timer],check=True)
         # Stop the finalization retry loop; do not kill an active update.

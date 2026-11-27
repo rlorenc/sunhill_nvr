@@ -1,28 +1,15 @@
-import os
-import subprocess
-import tempfile
-import unittest
-from pathlib import Path
-from sys import path
-path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from sunhill_nvr.motion_search import scan
-from sunhill_nvr.media import MediaError
+import sqlite3,json,unittest
+from unittest.mock import patch
+from sunhill_nvr import database,security,motion_search
 
 class MotionSearchTests(unittest.TestCase):
-    def test_real_motion_within_selected_roi_only(self):
-        with tempfile.TemporaryDirectory() as folder:
-            source=Path(folder)/'motion.mp4'
-            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=black:s=160x90:r=10:d=4','-vf',"drawbox=x=10:y=10:w=50:h=60:color=white:t=fill:enable='between(t,1,2.9)'",'-c:v','libx264','-pix_fmt','yuv420p',str(source)],check=True)
-            before=source.read_bytes()
-            fd=os.open(source,os.O_RDONLY)
-            try:
-                moving=scan(fd,0,4,[0,0,.5,1]);still=scan(fd,0,4,[.5,0,.5,1])
-                self.assertEqual(moving['sample_count'],8);self.assertEqual(moving['sample_fps'],2)
-                self.assertEqual(len(moving['hits']),2)
-                self.assertAlmostEqual(moving['hits'][0]['start'],1,delta=.5)
-                self.assertAlmostEqual(moving['hits'][1]['start'],3,delta=.5)
-                self.assertEqual(still['hits'],[])
-                with self.assertRaises(MediaError):scan(fd,0,20,[0,0,.5,1])
-                with self.assertRaises(ValueError):scan(fd,0,121,[0,0,.5,1])
-            finally:os.close(fd)
-            self.assertEqual(source.read_bytes(),before)
+    def test_search_native_boxes_only(self):
+        with sqlite3.connect(':memory:') as db:
+            security.initialize(db);database.migrate(db)
+            db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
+            inside=json.dumps([{'id':'1','kind':'person','box':[.1,.1,.2,.2]}]);outside=json.dumps([{'id':'2','kind':'person','box':[.7,.7,.2,.2]}]);
+            db.executemany('INSERT INTO camera_metadata_history VALUES(1,?,?,?)',[(101000,inside,'native:s'),(102000,inside,'native:s'),(103000,outside,'native:s'),(104000,inside,'old-local')]);db.commit()
+            with patch('subprocess.Popen',side_effect=AssertionError('decoder invoked')):
+                found=motion_search.scan(db,1,100,0,5,[0,0,.5,.5]);self.assertEqual(found['hits'],[{'start':1,'end':2}]);self.assertEqual(found['sample_count'],3)
+                self.assertEqual(motion_search.scan(db,1,100,0,5,[.5,.5,.5,.5])['hits'],[{'start':3,'end':3}])
+                self.assertEqual(motion_search.scan(db,1,100,20,5,[0,0,.5,.5])['sample_count'],0)

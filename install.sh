@@ -237,7 +237,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 package_install_started=1
-packages=(python3 gunicorn ffmpeg openssl nginx curl util-linux tzdata ca-certificates python3-opencv opencv-data tesseract-ocr tesseract-ocr-eng)
+packages=(python3 gunicorn ffmpeg openssl nginx curl util-linux tzdata ca-certificates)
 apt-get install -y "${packages[@]}"
 validate_executable_dependencies /usr/bin/python3 /usr/bin/gunicorn /usr/bin/ffmpeg /usr/bin/ffprobe \
     /usr/bin/openssl /usr/sbin/nginx /usr/bin/findmnt /usr/bin/systemctl \

@@ -15,8 +15,8 @@ class NginxTests(unittest.TestCase):
     self.assertIn('proxy_pass http://127.0.0.1:1984/$1.js;',c)
  def test_face_upload_scope(self):
     config=render('nvr.example.com',tls_certificate=Path('/etc/cert.pem'),tls_key=Path('/etc/key.pem'))
-    self.assertEqual(config.count('location ~ "^/api/admin/analytics/faces(?:/[0-9a-f]{32})?$"'),3)
-    self.assertEqual(config.count('client_max_body_size 28m;'),3)
+    self.assertNotIn('/api/admin/analytics/faces',config)
+    self.assertNotIn('client_max_body_size 28m;',config)
     self.assertEqual(config.count('client_max_body_size 16k;'),3)
  def test_direct_lan_ip_even_without_local_tls(self):
     config=render('nvr.example.com')

@@ -6,7 +6,7 @@ Sunhill NVR to samodzielnie hostowany system monitoringu dla Ubuntu Server, łą
 
 System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wieloterabajtowym archiwum.
 
-**1.1.2: kandydat do odbioru.** Nie uzyskano jeszcze wyników CI Ubuntu 26.04, odbioru fizycznych kamer ani inferencji rzeczywistymi modelami ONNX. Nie wdrażać na produkcyjne archiwum przed weryfikacją na kopii instalacji. Zobacz [instrukcję analizy i odbioru](docs/analytics-1.1.0.md).
+**1.2.0: kandydat do odbioru.** Analiza wyłącznie z natywnych danych kamer. Nie uzyskano jeszcze wyników CI Ubuntu 26.04 i odbioru fizycznych kamer. Nie wdrażać na produkcyjne archiwum przed weryfikacją na kopii instalacji.
 
 ## Najważniejsze funkcje
 
@@ -16,8 +16,8 @@ System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wi
 | Kamery IP | Dodawanie po adresie IP, wykrywanie strumieni RTSP przez ONVIF i znane ścieżki producentów, konfiguracja ręczna oraz identyfikacja modelu. |
 | Sterowanie kamerami | Reflektor, IR, zoom optyczny, ostrość, autofocus, zapisane pozycje PTZ oraz wybrane ustawienia obrazu, dźwięku, detekcji i funkcji urządzenia. Wykrywanie dostępności per kamera Reolink. |
 | Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo (HEVC z oznaczeniem `hvc1` po rozpoznaniu kodeka), segmenty RTSP od 30 sekund do 60 minut. |
-| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. Zoom cyfrowy i przesuwanie obrazu, wyszukiwanie zmian w wybranym obszarze nagrań. W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
-| Zdarzenia AI | Alarmy osoby, pojazdu i zwierzęcia z kamer Reolink (Baichuan lub CGI), filtrowanie, znaczniki i przejście do nagrania. Metadane ONVIF, lokalny fallback, ramki, ścieżki, reguły stref i linii, wykrywanie zasłonięcia, OCR tablic, opcjonalne modele COCO i profile twarzy. Metadane wraz z dostępnymi nagraniami; bez dodatkowych zdjęć i klipów. Ograniczenia w dokumentacji odbioru. |
+| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. Zoom cyfrowy i przesuwanie obrazu, wyszukiwanie zapisanych współrzędnych obiektów w wybranym obszarze (tylko jeśli kamera dostarcza metadane). W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
+| Zdarzenia AI | Alarmy z kamer Reolink (Baichuan lub CGI), filtrowanie, znaczniki i przejście do nagrania. Metadane ONVIF, ramki i ścieżki z danych urządzenia. Brak lokalnego AI, OCR i generowania ramek. Możliwości potwierdzane per kamera; metadane wraz z dostępnymi nagraniami. |
 | Import nagrań | Przyrostowe indeksowanie istniejących plików MP4, wybór kamery i okresu, wstrzymywanie skanu, liczniki postępu i bezpieczne czyszczenie starych pustych plików. |
 | Eksport | Pobieranie oryginalnych plików, eksport wybranego fragmentu do MP4, zapisywanie klatek i ochrona nagrań przed rotacją. |
 | Magazyn danych | Konfigurowalne katalogi nagrań, bufora i eksportów, automatyczna rotacja, kontrola wolnego miejsca oraz wymiana dysku bez rejestrowania UUID. |
@@ -156,7 +156,7 @@ Tryby naprawcze i migracja mechanizmu recovery są opisane w [dokumentacji aktua
 | [Magazyn i TLS](docs/storage-and-tls.md) | Konfiguracja dysków, ścieżek i dostępu HTTPS |
 | [Home Assistant](docs/home-assistant.md) | Zdarzenia, powiadomienia i przykładowe automatyzacje |
 | [Aktualizacje i recovery](docs/releasing.md) | Wydania, kopie, migracje i odzyskiwanie |
-| [Analiza i odbiór 1.1.0](docs/analytics-1.1.0.md) | Modele, profile, RTSP-only, kryteria odbioru |
+| [Analiza i odbiór 1.1.0](docs/analytics-1.1.0.md) | Dokument historyczny 1.1.x; lokalne modele wycofane w 1.2.0 |
 | [Historia zmian](CHANGELOG.md) | Zmiany w kolejnych wersjach |
 | [Specyfikacja](SPECIFICATION.md) | Uzgodnione wymagania funkcjonalne i techniczne |
 | [Status techniczny](STATUS.md) | Wyniki testów i potwierdzenia wdrożeń |

@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory() as directory:
         page.locator('#archive-exit-fullscreen').click();page.wait_for_function('!document.fullscreenElement')
         page.evaluate('archiveTest.clear()');assert page.evaluate('archiveTest.count()===0 && document.querySelectorAll("#archive-stage video").length===1')
         # Only supplied coordinates at the observation time are drawn, never a fabricated box.
-        page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:99,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}];drawDetectionOverlay($('archive-player'),1795608002)")
+        page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:99,timestamp:1795608002,type:'person',source:'reolink',box:[0.1,0.2,0.3,0.4]}];drawDetectionOverlay($('archive-player'),1795608002)")
         assert page.locator('#archive-detection-overlay .detection-box').count()==1
         assert page.locator('#archive-detection-overlay .detection-box').inner_text()==''
         assert page.locator('#archive-detection-overlay .detection-box').evaluate("el=>getComputedStyle(el).borderTopColor")=='rgb(239, 100, 100)'
@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert page.locator('#archive-object-overlay .detection-box').all_inner_texts()==['','','']
         assert page.locator('#archive-object-overlay .detection-box').first.evaluate("el=>getComputedStyle(el).borderTopColor")=='rgb(248, 237, 54)'
         assert page.locator('#archive-detection-overlay .detection-box').bounding_box()['width']>0
-        page.evaluate("code=>runArchiveTest(code)","eventMarkers=Array.from({length:24},(_,i)=>({id:i,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}));drawDetectionOverlay($('archive-player'),1795608002)")
+        page.evaluate("code=>runArchiveTest(code)","eventMarkers=Array.from({length:24},(_,i)=>({id:i,timestamp:1795608002,type:'person',source:'reolink',box:[0.1,0.2,0.3,0.4]}));drawDetectionOverlay($('archive-player'),1795608002)")
         assert page.locator('#archive-detection-overlay .detection-box').count()==24
         page.evaluate("code=>runArchiveTest(code)","drawDetectionOverlay($('archive-player'),1795608004)")
         assert page.locator('#archive-detection-overlay').is_hidden()

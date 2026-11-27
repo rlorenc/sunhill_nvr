@@ -48,18 +48,6 @@ def _locations(app_port: int,stream_port: int, *, client_ip: str, hostname: str,
         proxy_set_header X-Sunhill-Client-IP {client_ip};
         proxy_read_timeout 300s;
     }}
-    location ~ "^/api/admin/analytics/faces(?:/[0-9a-f]{{32}})?$" {{
-        client_max_body_size 28m;
-        proxy_request_buffering off;
-        proxy_pass http://127.0.0.1:{app_port};
-        proxy_set_header Host $host;
-        proxy_set_header Origin $http_origin;
-        proxy_set_header X-Forwarded-Proto {forwarded_proto};
-        proxy_set_header X-Sunhill-LAN-Origin {lan_origin};
-        proxy_set_header X-Sunhill-Client-IP {client_ip};
-        proxy_read_timeout 120s;
-        proxy_buffering off;
-    }}
     location = /internal/live-auth {{
         internal;
         proxy_pass http://127.0.0.1:{app_port}/internal/live-auth;

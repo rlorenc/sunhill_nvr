@@ -26,7 +26,7 @@ from .media_layout import validate_media_layout,nested_auxiliary
 from .cameras import Camera, validate, with_credentials
 from . import camera_discovery,player_assets,camera_statistics,camera_control,camera_settings,camera_events,live_workspace,camera_reboot,motion_search,object_analytics,onvif_capabilities,camera_firmware
 from .nginx_config import HOST
-from . import rollback_history,device_diagnosis,motion_boxes
+from . import rollback_history,device_diagnosis,native_capabilities
 from .fd_mount import MountBoundary,MountUnavailable
 from .files import FileBody, InvalidRange, acquire_shared, open_confined, open_export, delete_export, parse_range, recorded_identity
 from . import archive_compat, __version__, approved_update, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
@@ -1159,44 +1159,13 @@ class Application:
                   AND CAST(strftime('%s',COALESCE(utc_second,utc_first)) AS INTEGER)+duration>?
                 ORDER BY utc_first,id LIMIT 1""",(slug,int(exclude_text),lower,after+0.05)).fetchone()
             return '200 OK',{'recording':{'id':row[0],'utc_first':row[1],'utc_second':row[2]} if row else None},[]
-        if url=='/api/admin/analytics' and method=='GET':
-            self.admin(user)
-            from . import analytics_models,face_profiles
-            return '200 OK',{'models':analytics_models.status(),'profiles':face_profiles.inventory(db)},[]
-        profile=re.fullmatch(r'/api/admin/analytics/faces/([0-9a-f]{32})',url)
-        if (url=='/api/admin/analytics/faces' and method=='POST') or (profile and method=='PUT'):
-            self.admin(user)
-            from . import analytics_models,face_profiles
-            try:
-                with limits.slot(self.archive_lock.parent,'face-enrollment',count=1):
-                    data=self.json_body(environ,maximum=face_profiles.MAX_UPLOAD_BODY)
-                    if set(data)!={'label','consent','images'} or data['consent'] is not True:
-                        raise ValueError('consent required')
-                    label=data['label']
-                    if not isinstance(label,str) or not 1<=len(label)<=80 or not label.strip() or any(ord(c)<32 for c in label):raise ValueError('invalid label')
-                    images=face_profiles.web_images(data['images'])
-                    with analytics_models.provisioning_lock(create=False,nonblocking=True):
-                        self.current_admin(db,token)
-                        try:model_id,features=face_profiles.web_features(images)
-                        except (ImportError,OSError) as exc:raise APIError('503 Service Unavailable','Modele YuNet/SFace lub zależności są niedostępne') from exc
-                        except ValueError:raise
-                        except Exception:raise APIError('422 Unprocessable Entity','Nie można przetworzyć zdjęcia lub modelu') from None
-                        if not workers.writes_permitted():raise APIError('503 Service Unavailable','Trwa konserwacja systemu')
-                        ident=face_profiles.enroll(db,label,features,model_id=model_id,profile_id=profile.group(1) if profile else None,authorize=lambda db:self.current_admin(db,token)[0])
-                return ('200 OK' if profile else '201 Created'),{'id':ident},[]
-            except LookupError:raise APIError('404 Not Found','Nieznany profil') from None
-            except (limits.BusyError,BlockingIOError):raise APIError('429 Too Many Requests','Trwa inna operacja AI') from None
-            except FileNotFoundError:raise APIError('503 Service Unavailable','Najpierw zainstaluj modele YuNet/SFace') from None
-            except (ValueError,TypeError):raise APIError('422 Unprocessable Entity','Wymagana zgoda, nazwa i 1-5 zdjęć JPEG/PNG z jedną wyraźną twarzą (maks. 8 MB/plik, 20 MB łącznie, 4096 px); sprawdź również zgodność modeli') from None
-            except OSError:raise APIError('503 Service Unavailable','Modele lub katalog roboczy są niedostępne') from None
-        if profile and method=='DELETE':
-            self.admin(user)
-            from . import face_profiles
-            if not face_profiles.remove(db,profile.group(1),authorize=lambda db:self.current_admin(db,token)[0]):
-                raise APIError('404 Not Found','Nieznany profil')
-            return '200 OK',{'ok':True},[]
+        capability=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/native-capabilities',url)
+        if capability and method=='GET':
+            cid=int(capability.group(1))
+            if not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
+            return '200 OK',{'supported':sorted(native_capabilities.supported(db,cid))},[]
         if url=='/api/metadata/live' and method=='GET':
-            return '200 OK',{'cameras':object_analytics.live(db,user),'motion':motion_boxes.live(db,user)},[]
+            return '200 OK',{'cameras':object_analytics.live(db,user),'motion':{}},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/metadata-(settings|history)',url)
         if match:
             cid=int(match.group(1));part=match.group(2)
@@ -1216,7 +1185,7 @@ class Application:
                 if not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
                 params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
                 if set(params)!={'at_ms'} or len(params['at_ms'])!=1 or not re.fullmatch(r'[0-9]{1,13}',params['at_ms'][0]):raise APIError('400 Bad Request','Nieprawidłowy czas')
-                return '200 OK',{'frames':object_analytics.history(db,cid,int(params['at_ms'][0]),user),'motion_frames':motion_boxes.history(db,cid,int(params['at_ms'][0]))},[]
+                return '200 OK',{'frames':object_analytics.history(db,cid,int(params['at_ms'][0]),user),'motion_frames':[]},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/event-settings',url)
         if match and method in ('GET','PATCH'):
             self.admin(user);cid=int(match.group(1))
@@ -1274,7 +1243,7 @@ class Application:
             if cid is not None and not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
             rows=db.execute('''SELECT e.id,e.started_at,e.event_type,e.ended_at,e.source,e.zone,e.box_json,c.id,c.name
                 FROM event_markers e JOIN cameras c ON c.id=e.camera_id WHERE e.started_at>=? AND e.started_at<?
-                AND e.event_type NOT IN ('package','line_cross','intrusion','abandoned') AND (? IS NULL OR c.id=?) AND (?='' OR e.event_type=?) AND (?='admin' OR EXISTS(SELECT 1 FROM camera_permissions p WHERE p.user_id=? AND p.camera_id=c.id))
+                AND e.event_type NOT IN ('package','line_cross','intrusion','abandoned') AND e.source NOT IN ('nvr-motion','nvr-tamper','nvr-plate') AND e.source NOT LIKE 'local-rule:%' AND (? IS NULL OR c.id=?) AND (?='' OR e.event_type=?) AND (?='admin' OR EXISTS(SELECT 1 FROM camera_permissions p WHERE p.user_id=? AND p.camera_id=c.id))
                 AND (? IS NULL OR e.started_at<? OR (e.started_at=? AND e.id<?)) ORDER BY e.started_at DESC,e.id DESC LIMIT 201''',
                 (first,last,cid,cid,kind,kind,user[2],user[0],cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0)).fetchall()
             more=len(rows)>200;rows=rows[:200]
@@ -1298,7 +1267,7 @@ class Application:
                 first=int(datetime.combine(day,datetime.min.time(),tzinfo=zone).timestamp())
                 last=int(datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=zone).timestamp())
             except ValueError:raise APIError('400 Bad Request','Nieprawidłowa data')
-            rows=db.execute("SELECT id,started_at,event_type,ended_at,source,zone,box_json FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND event_type NOT IN ('package','line_cross','intrusion','abandoned') AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?",
+            rows=db.execute("SELECT id,started_at,event_type,ended_at,source,zone,box_json FROM event_markers WHERE camera_id=? AND started_at>=? AND started_at<? AND event_type NOT IN ('package','line_cross','intrusion','abandoned') AND source NOT IN ('nvr-motion','nvr-tamper','nvr-plate') AND source NOT LIKE 'local-rule:%' AND (? IS NULL OR started_at>? OR (started_at=? AND id>?)) ORDER BY started_at,id LIMIT ?",
                             (cid,first,last,cursor[0] if cursor else None,cursor[0] if cursor else 0,cursor[0] if cursor else 0,cursor[1] if cursor else 0,ARCHIVE_PAGE_SIZE+1)).fetchall()
             more=len(rows)>ARCHIVE_PAGE_SIZE;rows=rows[:ARCHIVE_PAGE_SIZE]
             next_cursor=f'{rows[-1][1]}|{rows[-1][0]}' if more else None
@@ -1322,17 +1291,16 @@ class Application:
             if not row or row[0].split('/',1)[0]!=row[5]:raise APIError('404 Not Found','Nie znaleziono nagrania')
             if not security.may_access(db,user,row[4]):raise APIError('403 Forbidden','Odmowa dostępu')
             if start+duration>row[3]+.000001:raise APIError('400 Bad Request','Zakres poza nagraniem')
+            if 'boxes' not in native_capabilities.supported(db,row[4]):raise APIError('422 Unprocessable Entity','Kamera nie udostępnia współrzędnych obiektów')
+            first,second=db.execute('SELECT utc_first,utc_second FROM recordings WHERE id=?',(rid,)).fetchone()
+            if not first or second:raise APIError('422 Unprocessable Entity','Brak jednoznacznego czasu nagrania')
             try:
-                with limits.slot(self.archive_lock.parent,'motion-search',count=1):
-                    fd,_=open_confined(self.archive_root,row[0],expected_size=row[1],expected_mtime_ns=row[2],expected_identity=recorded_identity(*row[6:9]))
-                    try:
-                        acquire_shared(fd)
-                        try:result=motion_search.scan(fd,start,duration,box)
-                        except ValueError:raise APIError('400 Bad Request','Nieprawidłowy obszar lub zakres wyszukiwania') from None
-                    finally:os.close(fd)
-            except limits.BusyError:raise APIError('429 Too Many Requests','Wyszukiwanie zajęte; spróbuj ponownie')
+                fd,_=open_confined(self.archive_root,row[0],expected_size=row[1],expected_mtime_ns=row[2],expected_identity=recorded_identity(*row[6:9]))
+                os.close(fd)
+                from datetime import datetime
+                stamp=datetime.fromisoformat(first).timestamp()
+                result=motion_search.scan(db,row[4],stamp,start,duration,box)
             except (OSError,ValueError,MountBoundary,MountUnavailable):raise APIError('404 Not Found','Nagranie niedostępne')
-            except media.MediaError:raise APIError('422 Unprocessable Entity','Nie udało się przeanalizować całego zakresu w limicie czasu')
             if not security.may_access(db,security.get_user(db,token),row[4]):raise APIError('403 Forbidden','Odmowa dostępu')
             return '200 OK',result,[]
         match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/frame',url)

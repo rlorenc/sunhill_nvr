@@ -43,5 +43,5 @@ class ArchiveMetadataTests(unittest.TestCase):
         with self.db:e.save_options(self.db,1,{'enabled':True,'types':['person']})
         self.assertEqual(e.options(self.db,1)['types'],list(e.TYPES));self.assertEqual(e.options(self.db,1)['retention_policy'],'archive');self.assertNotIn('retention_days',a.options(self.db,1))
         objects=[{'id':str(i),'kind':'person','box':[.1,.1,.1,.1]} for i in range(150)]
-        self.assertTrue(a.snapshot(self.db,1,'rtsp://192.168.1.2/main',100000000,objects,'test',a.RuleEngine(),received=100000000))
+        self.assertTrue(a.snapshot(self.db,1,'rtsp://192.168.1.2/main',100000000,objects,'test',received=100000000))
         self.assertEqual(len(next(f for f in a.history(self.db,1,100000000) if f['stamp_ms']==100000000)['objects']),150)

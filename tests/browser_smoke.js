@@ -9,6 +9,7 @@ function node() {
     listeners:{},children:[],
     addEventListener(name,handler){this.listeners[name]=handler;},
     append(...items){this.children.push(...items);},
+    prepend(...items){this.children.unshift(...items);},
     add(item){this.children.push(item);},
     replaceWith(item){this.replacement=item;},
     replaceChildren(...items){this.children=items;},
@@ -48,19 +49,16 @@ eval(code+`
   api=async()=>({origin:'https://nvr.example',supported:false,pending:false,status:{state:'idle',message:''}});
   await refreshDomain();
   if(!$('domain-current').textContent.includes('https://nvr.example')||!$('domain-status').textContent.includes('migracji'))throw new Error('domain settings status missing');
-  let deletedProfile=null;
-  api=async(url,method)=>{if(method==='DELETE'){deletedProfile=url;return {ok:true};}return {models:{coco:{state:'missing'},'face-detector':{state:'present'},'face-recognizer':{state:'untrusted'}},profiles:deletedProfile?[]:[{id:'abc',label:'Example profile',samples:2}]};};
-  await refreshAnalyticsAdmin();
-  if(!$('analytics-models').children[0].textContent.includes('Brak pliku')||!$('analytics-models').children[1].textContent.includes('niezweryfikowana'))throw new Error('model status missing');
-  $('analytics-profiles').children[1].children[2].listeners.click();
-  if(faceEnrollmentId!=='abc'||$('face-enrollment-label').value!=='Example profile')throw new Error('profile update form missing');
-  let faceUpdate=null;globalThis.FileReader=class {readAsDataURL(){this.result='data:image/png;base64,YWJj';this.onload();}};
-  const inventoryAPI=api;api=async(url,method,data)=>{if(method==='PUT'){faceUpdate={url,data};return {id:'abc'};}return inventoryAPI(url,method,data);};
-  $('face-enrollment-images').files=[{size:3}];$('face-enrollment-consent').checked=true;
-  await $('face-enrollment-form').listeners.submit({preventDefault(){}});
-  if(faceUpdate?.url!=='/api/admin/analytics/faces/abc'||faceUpdate.data.images[0]!=='YWJj'||faceEnrollmentId!==null)throw new Error('profile update submission missing');
-  await $('analytics-profiles').children[1].children[1].listeners.click();
-  if(deletedProfile!=='/api/admin/analytics/faces/abc'||!$('analytics-profiles').children[1].textContent.includes('Brak zapisanych'))throw new Error('profile removal not refreshed');
+  // Only hardware features positively confirmed by a camera are offered.
+  api=async()=>({enabled:true,supported:[],status:null});
+  const unknownEvents=eventSettingsPanel({id:1}),unknownBoxes=metadataSettingsPanel({id:1});
+  await Promise.resolve();await Promise.resolve();
+  if(!unknownEvents.hidden||!unknownBoxes.hidden)throw new Error('unknown analytics exposed');
+  api=async()=>({enabled:true,supported:['person','motion','boxes'],status:null});
+  const knownEvents=eventSettingsPanel({id:1}),knownBoxes=metadataSettingsPanel({id:1});
+  await Promise.resolve();await Promise.resolve();
+  const labels=knownEvents.children[2].children.map(x=>x.textContent);
+  if(knownEvents.hidden||knownBoxes.hidden||!labels.includes('Człowiek')||!labels.includes('Ruch')||labels.includes('Twarz')||labels.includes('Tablica rejestracyjna'))throw new Error('unsupported native settings exposed');
   activeCamera={id:1,name:'Brama',may_download:false};
   const longWindows=motionWindows({id:12},0,300);
   if(longWindows.length!==3||longWindows[1].start!==119.5||longWindows[2].start+longWindows[2].duration!==300)throw new Error('motion window coverage invalid');
@@ -104,6 +102,9 @@ eval(code+`
   $('cameras').querySelectorAll=()=>[card];cameras=[{id:1,name:'Brama',slug:'cam',enabled:true,sub_configured:false,may_download:true,health:'recording'}];
   api=async()=>({cameras:[{...cameras[0],health:'stale'}]});await refreshCameraStatus();
   if(!badge.title.includes('brak nowych plików'))throw new Error('camera health did not refresh');
+  if(badge.textContent!=='Uwaga')throw new Error('warning status must remain compact');
+  api=async()=>({cameras:[{...cameras[0],health:'recording',stream_health:'available'}]});await refreshCameraStatus();
+  if(badge.textContent!=='REC'||!badge.title.includes('Obraz: dostępny | Zapis: nagrywa'))throw new Error('REC status or diagnostic tooltip lost');
   const originalLayouts=refreshLayouts,originalRender=renderCameras;let rerendered=false;
   refreshLayouts=async()=>{};renderCameras=()=>{rerendered=true;};api=async()=>({cameras:[]});await refreshCameraStatus();
   if(!rerendered||cameras.length)throw new Error('camera access changes did not update the grid');

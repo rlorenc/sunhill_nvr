@@ -139,6 +139,12 @@ CREATE INDEX idx_face_templates_profile ON face_templates(profile_id);
 CREATE TABLE camera_diagnosis (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, checked INTEGER NOT NULL, result_json TEXT NOT NULL);
 CREATE TABLE camera_motion_latest (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL);
 CREATE TABLE camera_motion_history (camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(camera_id,stamp_ms)) WITHOUT ROWID;
+''',
+15: '''
+CREATE TABLE camera_native_capabilities (camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(camera_id,fingerprint,kind));
+UPDATE camera_metadata_options SET source_mode='auto';
+DELETE FROM camera_metadata_latest;
+DELETE FROM camera_motion_latest;
 '''
 }
 

@@ -26,6 +26,7 @@ let timelineSelection = null;
 let timelineFormatter = null;
 let timelineFormatterZone = null;
 let cameraRefreshGeneration = 0;
+let cameraRefreshPending = false;
 let statusRefreshPending = false;
 let adminRefreshGeneration = 0;
 let storageDirty=false, storageRequest=null, storagePolling=false, storageCurrent=null, storageLocalMessage=null;
@@ -98,7 +99,7 @@ async function flushLiveWorkspace(){
 async function restoreLiveWorkspace(){
   if(!me||workspaceReady&&workspaceOwner===me.id)return;
   const owner=me.id;workspaceOwner=owner;workspaceReady=false;workspacePending=null;liveLayoutOrder=[];liveLayoutSizes.clear();detectionBoxesVisible=true;renderDetectionBoxes();
-  const result=await api('/api/live-workspace');if(me?.id!==owner)return;
+  const result=await api('/api/live-workspace','GET',null,5000);if(me?.id!==owner)return;
   const state=result.workspace;
   if(state){liveLayoutOrder=state.order.map(String);for(const [id,size] of Object.entries(state.sizes))liveLayoutSizes.set(id,size);$('layout-select').value=state.layout_id==null?'':String(state.layout_id);}
   detectionBoxesVisible=state?.detection_boxes!==false;reconcileLiveLayout();workspaceReady=true;renderDetectionBoxes();
@@ -304,10 +305,40 @@ function watchNativeLiveControls(owner){
   observer.observe(owner,{childList:true,subtree:true,attributes:true,attributeFilter:['controls']});
   sync();liveControlObservers.set(owner,observer);
 }
+// go2rtc creates the native video inside connectedCallback/oninit, not in
+// createElement. Set mute before its first play(), and restore the overlay
+// after video-stream.oninit replaces the element's innerHTML.
+function prepareLivePlayer(owner,initialAudio){
+  const init=owner.oninit;
+  if(typeof init!=='function')return;
+  owner.oninit=function(...args){
+    const result=init.apply(this,args);
+    if(this.video){this.video.muted=!initialAudio?.audible;this.video.controls=false;if(Number.isFinite(initialAudio?.volume))this.video.volume=initialAudio.volume;}
+    if(this.sunhillOverlay&&!this.contains(this.sunhillOverlay))this.append(this.sunhillOverlay);
+    return result;
+  };
+}
 function closeLivePlayer(player){
   liveControlObservers.get(player)?.disconnect();liveControlObservers.delete(player);
-  if(typeof player.ondisconnect==='function')player.ondisconnect();
+  // A removed go2rtc element may still have a scheduled reconnect. Disable
+  // its source before closing; a late close event cannot reopen the socket.
+  player.wsURL='';
+  for(const timer of ['reconnectTID','disconnectTID'])if(player[timer]){clearTimeout(player[timer]);player[timer]=0;}
+  if(player.video&&typeof player.ondisconnect==='function')player.ondisconnect();
+  else if(typeof player.ondisconnect==='function'&&typeof player.oninit!=='function')player.ondisconnect();
 }
+// No progress for 20 seconds, not a short normal buffering interval. Keep
+// the reconnect cooldown across replacement players in the same tile.
+function liveRecoveryDecision(state,time,now,visible){
+  if(!visible||!Number.isFinite(time)||state.time===null||Math.abs(time-state.time)>0.05){state.time=Number.isFinite(time)?time:null;state.since=now;return false;}
+  if(now-state.since<20000||now-state.lastRetry<30000)return false;
+  state.lastRetry=now;state.since=now;return true;
+}
+function recoverLivePlayers(){
+  if(!me||$('camera-view').hidden)return;
+  for(const card of liveLayoutCards())card.sunhillRecover?.();
+}
+document.addEventListener?.('visibilitychange',()=>{for(const card of liveLayoutCards())card.sunhillResetRecovery?.();});
 
 function livePlayerReady(){return typeof customElements!=='undefined'&&Boolean(customElements.get('video-stream'));}
 function ensureLivePlayer(){
@@ -330,7 +361,7 @@ function ensureLivePlayer(){
     if(nativeFallback)globalThis.sunhillMsePolicy='native';
     livePlayerLoading=false;livePlayerAttempts=0;script.remove();
     // Create players only after their custom element has been registered.
-    if(me&&!$('camera-view').hidden)renderCameras();
+    if(me&&!cameraRefreshPending&&!$('camera-view').hidden&&!$('cameras').querySelectorAll('video-stream').length)renderCameras();
   };
   document.head.append(script);
 }
@@ -344,14 +375,19 @@ function cookie(name) {
   const item = document.cookie.split('; ').find((part) => part.startsWith(name + '='));
   return item ? decodeURIComponent(item.slice(name.length + 1)) : '';
 }
-async function api(url, method = 'GET', data = null) {
+async function api(url, method = 'GET', data = null, timeoutMs = 0) {
   const options = {method, credentials:'same-origin', headers:{}};
   if (method !== 'GET') options.headers['X-CSRF-Token'] = cookie('sunhill_csrf');
   if (data !== null) {options.headers['Content-Type']='application/json';options.body=JSON.stringify(data);}
-  const response = await fetch(url, options);
-  let value;try{value=await response.json();}catch{throw new Error(response.status===503?'Serwer jest chwilowo niedostępny.':'Nieprawidłowa odpowiedź serwera.');}
-  if (!response.ok) {const error=new Error(value.error || 'Błąd żądania');error.status=response.status;throw error;}
-  return value;
+  const controller=timeoutMs&&typeof AbortController!=='undefined'?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
+  if(controller)options.signal=controller.signal;
+  try{
+    const response=await fetch(url,options);
+    let value;try{value=await response.json();}catch(error){if(controller?.signal.aborted)throw error;throw new Error(response.status===503?'Serwer jest chwilowo niedostępny.':'Nieprawidłowa odpowiedź serwera.');}
+    if(!response.ok){const error=new Error(value.error||'Błąd żądania');error.status=response.status;throw error;}
+    return value;
+  }catch(error){if(controller?.signal.aborted)throw new Error('Przekroczono czas pobierania ustawień widoku.');throw error;}finally{if(timer!==null)clearTimeout(timer);}
 }
 function element(tag, text, className) {
   const node=document.createElement(tag);if(text)node.textContent=text;if(className)node.className=className;return node;
@@ -383,7 +419,7 @@ function view(which) {
   if(which!=='archive'&&!$('archive-view').hidden){$('archive-object-overlay').hidden=true;nativeArchiveCache={camera:null,at:0,frames:[]};resetMotionSearch();playbackGeneration++;archiveLoadGeneration++;calendarGeneration++;archiveAutoRecovery=null;$('archive-calendar-panel').open=false;clearTimeout(previewTimer);$('timeline-preview').hidden=true;$('archive-player').pause();clearArchiveBuffers();}
   if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';
   for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
-  if(which==='cameras'&&cameraWasHidden)renderCameras();
+  if(which==='cameras'&&cameraWasHidden&&!cameraRefreshPending)renderCameras();
   else if(which!=='cameras'){
     stopTalkback();closeLiveMenu();stopLiveLayoutGesture();liveLayoutEditing=false;nativeTracks.clear();
     for(const player of $('cameras').querySelectorAll('video-stream'))closeLivePlayer(player);
@@ -391,20 +427,32 @@ function view(which) {
   }
 }
 async function refreshCameras() {
-  const generation=++cameraRefreshGeneration,incoming=(await api('/api/cameras')).cameras;
-  if(generation!==cameraRefreshGeneration)return;
-  if(!Array.isArray(incoming))throw new Error('Nieprawidłowa lista kamer.');
-  cameras=incoming;cameraListState='ready';
-  // A layout endpoint failure must not prevent the actual camera inventory from appearing.
-  const selected=$('layout-select').value;renderCameras();await refreshLayouts();const restoring=!workspaceReady||workspaceOwner!==me?.id;await restoreLiveWorkspace();if(generation===cameraRefreshGeneration&&(restoring||selected||$('layout-select').value))renderCameras();
+  const generation=++cameraRefreshGeneration;cameraRefreshPending=true;
+  let inventoryReady=false;
+  try{
+    const incoming=(await api('/api/cameras')).cameras;
+    if(generation!==cameraRefreshGeneration)return;
+    if(!Array.isArray(incoming))throw new Error('Nieprawidłowa lista kamer.');
+    cameras=incoming;cameraListState='ready';inventoryReady=true;
+    // Restore the named layout and personal workspace before creating
+    // players. Even a failed auxiliary endpoint must not hide cameras.
+    let layoutError=null;
+    try{await refreshLayouts();}catch(error){layoutError=error;}
+    if(generation!==cameraRefreshGeneration)return;
+    try{await restoreLiveWorkspace();}catch(error){layoutError=layoutError||error;}
+    if(layoutError)throw layoutError;
+  }finally{
+    if(generation===cameraRefreshGeneration){cameraRefreshPending=false;if(inventoryReady&&!$('camera-view').hidden)renderCameras();}
+  }
 }
 async function refreshCameraStatus(){
+  if(cameraRefreshPending)return;
   const generation=++cameraRefreshGeneration,incoming=(await api('/api/cameras')).cameras;
   if(generation!==cameraRefreshGeneration||$('camera-view').hidden)return;
   if(!Array.isArray(incoming))throw new Error('Nieprawidłowa lista kamer.');
   const shape=list=>JSON.stringify(list.map(c=>[c.id,c.name,c.slug,c.enabled,c.sub_configured,c.may_download]));
   const changed=shape(cameras)!==shape(incoming),wasReady=cameraListState==='ready';cameras=incoming;cameraListState='ready';
-  if(changed){const selected=$('layout-select').value;renderCameras();await refreshLayouts();if(generation===cameraRefreshGeneration&&!$('camera-view').hidden&&(selected||$('layout-select').value))renderCameras();return;}
+  if(changed){try{await refreshLayouts();}finally{if(generation===cameraRefreshGeneration&&!$('camera-view').hidden)renderCameras();}return;}
   if(!wasReady&&!cameras.length){renderCameras();return;}
   for(const card of $('cameras').querySelectorAll('.camera')){
     const camera=incoming.find(item=>String(item.id)===card.dataset.cameraId),label=card.querySelector('.health');
@@ -412,7 +460,7 @@ async function refreshCameraStatus(){
   }
 }
 async function refreshLayouts(){
-  const incoming=(await api('/api/layouts')).layouts;if(!Array.isArray(incoming))throw new Error('Nieprawidłowa lista układów kamer.');layouts=incoming;const select=$('layout-select'),old=select.value;
+  const incoming=(await api('/api/layouts','GET',null,5000)).layouts;if(!Array.isArray(incoming))throw new Error('Nieprawidłowa lista układów kamer.');layouts=incoming;const select=$('layout-select'),old=select.value;
   select.replaceChildren(new Option('Wszystkie kamery',''));for(const layout of layouts)select.add(new Option(layout.name,String(layout.id)));select.value=layouts.some(layout=>String(layout.id)===old)?old:'';
   const manage=$('manage-layout-select'),managed=manage.value;manage.replaceChildren(new Option('Wybierz układ',''));for(const layout of layouts)manage.add(new Option(layout.name,String(layout.id)));manage.value=layouts.some(layout=>String(layout.id)===managed)?managed:'';$('delete-layout').disabled=!manage.value;
   const choices=$('layout-cameras');choices.replaceChildren();for(const camera of cameras){const label=element('label');const input=element('input');input.type='checkbox';input.value=String(camera.id);input.checked=true;label.append(input,document.createTextNode(camera.name));choices.append(label);}
@@ -623,7 +671,7 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     if(!['sub','main'].includes(selected)||selected==='sub'&&!camera.sub_configured)selected=camera.sub_configured?'sub':'main';
     if(enlarged)card.classList.toggle('expanded');
     const remember=()=>livePreferences.set(key,{quality:selected,enlarged});
-    function player(alias){const item=document.createElement('video-stream');item.mode='mse';item.media='video,audio';item.background=false;if(item.video)item.video.muted=true;watchNativeLiveControls(item);const overlay=element('div',null,'native-object-overlay');overlay.hidden=true;item.append(overlay);item.sunhillOverlay=overlay;const zoom=installDigitalZoom(item,()=>[item.video,overlay],()=>!liveLayoutEditing);item.addEventListener('loadedmetadata',zoom.apply,true);item.title='Rolka: zoom cyfrowy; przeciągnij: przesuń; dwuklik: rozmiar kafelka';item.addEventListener('dblclick',event=>{if(item!==video||!camera.enabled||document.fullscreenElement||liveLayoutGesture)return;event.preventDefault();event.stopPropagation();closeLiveMenu();toggleExpanded();});item.src=new URL('/live/api/ws?src='+encodeURIComponent(alias),location.origin);return item;}
+    function player(alias,initialAudio=null){const item=document.createElement('video-stream');item.mode='mse';item.media='video,audio';item.background=false;item.sunhillBufferTarget=alias===camera.slug+'_sub'?4.5:0;if(item.video)item.video.muted=!initialAudio?.audible;watchNativeLiveControls(item);const overlay=element('div',null,'native-object-overlay');overlay.hidden=true;item.append(overlay);item.sunhillOverlay=overlay;prepareLivePlayer(item,initialAudio);const zoom=installDigitalZoom(item,()=>[item.video,overlay],()=>!liveLayoutEditing);item.addEventListener('loadedmetadata',zoom.apply,true);item.title='Rolka: zoom cyfrowy; przeciągnij: przesuń; dwuklik: rozmiar kafelka';item.addEventListener('dblclick',event=>{if(item!==video||!camera.enabled||document.fullscreenElement||liveLayoutGesture)return;event.preventDefault();event.stopPropagation();closeLiveMenu();toggleExpanded();});item.src=new URL('/live/api/ws?src='+encodeURIComponent(alias),location.origin);return item;}
     let video=null,currentAlias=null,compatibility=false;
     if(camera.enabled){if(livePlayerReady()){currentAlias=selectedLiveAlias(camera,selected,enlarged);video=player(currentAlias);card.append(video);}else card.append(element('p','Oczekiwanie na usługę podglądu.','camera-actions'));}else card.append(element('p','Podgląd wyłączony','camera-actions'));
     const actions=element('div',null,'camera-actions live-options');actions.hidden=true;actions.id='live-options-'+camera.id;actions.setAttribute('role','group');actions.setAttribute('aria-label','Opcje kamery '+camera.name);
@@ -713,7 +761,10 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
         if(generation===audioGeneration&&video===owner&&owner.video===native&&card.isConnected!==false)showAudioPrompt('Nie udało się wznowić obrazu bez dźwięku. Użyj Połącz ponownie.');
       }}
     });
-    function replacePlayer(alias){if(!video)return;const replacement=player(alias);audioGeneration++;audioPending=false;audioRequested=false;diagnosticText.textContent='Oczekiwanie na dane odtwarzacza.';closeLivePlayer(video);video.replaceWith(replacement);video=replacement;currentAlias=alias;audioLabel(false);hideAudioPrompt();observeAudio(replacement);}
+    function replacePlayer(alias,automatic=false){if(!video)return;const old=video,native=old.video;const initialAudio=automatic&&native?{audible:audioRequested&&!native.muted,volume:native.volume}:null;const replacement=player(alias,initialAudio);audioGeneration++;audioPending=false;audioRequested=Boolean(initialAudio?.audible);diagnosticText.textContent=automatic?'Brak postępu obrazu - ponowne połączenie.':'Oczekiwanie na dane odtwarzacza.';closeLivePlayer(old);video=replacement;currentAlias=alias;audioLabel(audioRequested);hideAudioPrompt();observeAudio(replacement);old.replaceWith(replacement);recovery.time=null;recovery.since=Date.now();}
+    const recovery={time:null,since:Date.now(),lastRetry:-Infinity};
+    card.sunhillResetRecovery=()=>{recovery.time=null;recovery.since=Date.now();};
+    card.sunhillRecover=()=>{if(!video)return;const native=video.video;const visible=!document.hidden&&!$('camera-view').hidden&&card.isConnected!==false;const time=Number.isFinite(native?.currentTime)?native.currentTime:0;if(!liveRecoveryDecision(recovery,time,Date.now(),visible))return;replacePlayer(currentAlias,true);};
     function changeQuality(){selected=quality.value;remember();saveLiveQuality(camera,selected);compatibility=false;compat.textContent='Tryb zgodności H.264';if(!video)return;const alias=selectedLiveAlias(camera,selected,enlarged);if(alias!==currentAlias)replacePlayer(alias);}
     quality.addEventListener('change',changeQuality);actions.append(quality,sound);
     const retry=element('button','Połącz ponownie');retry.type='button';retry.hidden=!camera.enabled;retry.addEventListener('click',()=>{if(video)replacePlayer(currentAlias);else{ensureLivePlayer();if(livePlayerReady())renderCameras();}});actions.append(retry);
@@ -742,7 +793,7 @@ async function openArchive(camera, date=null, event=null) {
   clearTimeout(previewTimer);$('timeline-preview').hidden=true;
   clearTimelineSelection();
   activeCamera=camera;const selector=$('archive-camera-select');selector.replaceChildren();for(const item of cameras)selector.add(new Option(item.name,String(item.id)));selector.value=String(camera.id);$('archive-selection').hidden=!camera.may_download;resetArchiveContents();loadedArchiveDate=null;$('archive-title').textContent='Archiwum - '+camera.name;
-  playbackGeneration++;resetMotionSearch();$('archive-object-overlay').hidden=true;archiveDigitalZoom.reset();$('archive-date').value=date||cameraDay();$('archive-timezone').textContent='Strefa czasowa kamer: '+me.timezone;$('archive-player').pause();$('archive-player').removeAttribute('src');if($('archive-player').load)$('archive-player').load();
+  playbackGeneration++;resetMotionSearch();$('motion-search-panel').hidden=true;const nativeCameraId=camera.id;void api(`/api/cameras/${nativeCameraId}/native-capabilities`).then(data=>{if(activeCamera?.id===nativeCameraId)$('motion-search-panel').hidden=!data.supported.includes('boxes');}).catch(()=>{});$('archive-object-overlay').hidden=true;archiveDigitalZoom.reset();$('archive-date').value=date||cameraDay();$('archive-timezone').textContent='Strefa czasowa kamer: '+me.timezone;$('archive-player').pause();$('archive-player').removeAttribute('src');if($('archive-player').load)$('archive-player').load();
   $('archive-month').value=$('archive-date').value.slice(0,7);$('calendar-days').replaceChildren();$('archive-calendar-panel').open=false;$('save-frame').hidden=!camera.may_download;$('export-panel').hidden=!camera.may_download;$('export-result').replaceChildren();$('archive-player').muted=true;updateArchiveControls();view('archive');const loaded=await loadArchive(!event);if(loaded&&event&&activeCamera===camera&&!$('archive-view').hidden&&$('archive-date').value===date)seekToEvent(event);
 }
 async function refreshExports(){
@@ -1090,20 +1141,21 @@ $('motion-search-run').addEventListener('click',async()=>{
   try{
     for(let i=0;i<windows.length;i++){
       if(!current())return;const part=windows[i];
-      $('motion-search-status').textContent=`Analiza ${i+1}/${windows.length} · wyniki ${hits} · błędy ${failed}`;
+      $('motion-search-status').textContent=`Metadane ${i+1}/${windows.length} · wyniki ${hits} · błędy ${failed}`;
       let data;
       try{data=await api(`/api/recordings/${part.record.id}/motion-search`,'POST',{box,start:part.start,duration:part.duration});}
       catch(error){if(!current())return;if([401,403,429].includes(error.status))throw error;failed++;continue;}
       if(!current())return;
+      if(data.sample_count===0){skipped++;continue;}
       for(const hit of data.hits){
         if(hit.end<=(lastEnd.get(part.record.id)??-1))continue;lastEnd.set(part.record.id,hit.end);hits++;
         // Keep the browser bounded even for a very busy day.
         if(hits>1000)continue;
-        const go=element('button',`${part.record.local_time||'Nagranie '+part.record.id} · ruch ${hit.start.toFixed(1)}–${hit.end.toFixed(1)} s`);go.type='button';
+        const go=element('button',`${part.record.local_time||'Nagranie '+part.record.id} · obiekt ${hit.start.toFixed(1)}–${hit.end.toFixed(1)} s`);go.type='button';
         go.addEventListener('click',()=>{const index=records.findIndex(r=>r.id===part.record.id);if(index>=0&&camera===activeCamera)playRecord(index,hit.start);});$('motion-search-results').append(go);
       }
     }
-    if(current())$('motion-search-status').textContent=`Zakończono: ${hits} trafień, ${failed} nieprzeanalizowanych odcinków, ${skipped} pominiętych plików.`+(hits>1000?' Pokazano pierwsze 1000 trafień.':'')+' Przerwy w nagraniach oraz krótkie ruchy mogą pozostać niewykryte.';
+    if(current())$('motion-search-status').textContent=`Zakończono: ${hits} trafień, ${failed} nieprzeanalizowanych odcinków, ${skipped} pominiętych plików.`+(hits>1000?' Pokazano pierwsze 1000 trafień.':'')+' Brak metadanych nie oznacza braku ruchu.';
   }catch(error){if(current())$('motion-search-status').textContent='Analiza niepełna: '+error.message;}
   finally{if(current()){button.disabled=false;$('motion-search-cancel').disabled=true;}}
 });
@@ -1190,7 +1242,7 @@ let boxEventSource=null,boxEvents=[];
 function drawDetectionOverlay(video,instant){
   const overlay=$('archive-detection-overlay');if(!overlay)return;overlay.hidden=true;overlay.replaceChildren();
   if(!video.videoWidth||!video.videoHeight||!video.clientWidth||!video.clientHeight||!Number.isFinite(instant))return;
-  if(boxEventSource!==eventMarkers){boxEventSource=eventMarkers;boxEvents=eventMarkers.filter(e=>Array.isArray(e.box)&&e.box.length===4);}
+  if(boxEventSource!==eventMarkers){boxEventSource=eventMarkers;boxEvents=eventMarkers.filter(e=>['reolink','camera-plate'].includes(e.source)&&Array.isArray(e.box)&&e.box.length===4);}
   const observed=boxEvents.filter(e=>Math.abs(e.timestamp-instant)<=0.5);
   if(!observed.length)return;
   const scale=Math.min(video.clientWidth/video.videoWidth,video.clientHeight/video.videoHeight),w=video.videoWidth*scale,h=video.videoHeight*scale;
@@ -1213,16 +1265,12 @@ function paintNativeObjects(overlay,video,frame,tracks=null){
   if(tracks)for(const key of tracks.paths.keys())if(!seen.has(key))tracks.paths.delete(key);
   overlay.hidden=!overlay.children.length;
 }
-function combineObservations(native,motion){
-  if(!native&&!motion)return null;
-  return {stamp_ms:Math.max(native?.stamp_ms||0,motion?.stamp_ms||0),session:(native?.session||'')+'|'+(motion?.session||''),objects:[...(native?.objects||[]),...(motion?.objects||[])]};
-}
 let nativePollBusy=false;const nativeTracks=new Map();
 async function pollNativeObjects(){
   if(nativePollBusy||!me||document.hidden||$('camera-view').hidden)return;
-  nativePollBusy=true;const owner=me.id;let frames={},motion={};try{const result=await api('/api/metadata/live');frames=result.cameras||{};motion=result.motion||{};}catch(error){}finally{nativePollBusy=false;}
+  nativePollBusy=true;const owner=me.id;let frames={};try{const result=await api('/api/metadata/live');frames=result.cameras||{};}catch(error){}finally{nativePollBusy=false;}
   if(!me||me.id!==owner||$('camera-view').hidden){nativeTracks.clear();return;}
-  const visible=new Set();for(const card of $('cameras').querySelectorAll('.camera')){const id=card.dataset.cameraId;visible.add(id);const player=card.querySelector('video-stream');if(!player?.sunhillOverlay)continue;const frame=combineObservations(frames[id],motion[id]);if(!frame)nativeTracks.delete(id);if(!nativeTracks.has(id))nativeTracks.set(id,{session:null,paths:new Map()});paintNativeObjects(player.sunhillOverlay,player.video,frame,nativeTracks.get(id));}
+  const visible=new Set();for(const card of $('cameras').querySelectorAll('.camera')){const id=card.dataset.cameraId;visible.add(id);const player=card.querySelector('video-stream');if(!player?.sunhillOverlay)continue;const frame=frames[id]||null;if(!frame)nativeTracks.delete(id);if(!nativeTracks.has(id))nativeTracks.set(id,{session:null,paths:new Map()});paintNativeObjects(player.sunhillOverlay,player.video,frame,nativeTracks.get(id));}
   for(const id of nativeTracks.keys())if(!visible.has(id))nativeTracks.delete(id);
 }
 setInterval(pollNativeObjects,1000);
@@ -1230,10 +1278,10 @@ let nativeArchiveCache={camera:null,at:0,frames:[]},nativeArchivePending=false;
 async function drawArchiveObjects(video,instant){
   const overlay=$('archive-object-overlay');if(!overlay||!activeCamera)return;
   const cid=activeCamera.id,gen=playbackGeneration;
-  if(nativeArchiveCache.camera!==cid||Math.abs(nativeArchiveCache.at-instant)>4000){overlay.hidden=true;if(nativeArchivePending)return;nativeArchivePending=true;try{const result=await api(`/api/cameras/${cid}/metadata-history?at_ms=${Math.round(instant)}`);if(activeCamera?.id!==cid||gen!==playbackGeneration||$('archive-view').hidden)return;nativeArchiveCache={camera:cid,at:instant,frames:result.frames||[],motion:result.motion_frames||[]};}catch(error){return;}finally{nativeArchivePending=false;}}
+  if(nativeArchiveCache.camera!==cid||Math.abs(nativeArchiveCache.at-instant)>4000){overlay.hidden=true;if(nativeArchivePending)return;nativeArchivePending=true;try{const result=await api(`/api/cameras/${cid}/metadata-history?at_ms=${Math.round(instant)}`);if(activeCamera?.id!==cid||gen!==playbackGeneration||$('archive-view').hidden)return;nativeArchiveCache={camera:cid,at:instant,frames:result.frames||[]};}catch(error){return;}finally{nativeArchivePending=false;}}
   if(!me||activeCamera?.id!==cid||gen!==playbackGeneration||video!==$('archive-player')||$('archive-view').hidden||video.seeking||video.readyState<2)return;
   const record=records[recordPosition],now=record?Date.parse(record.utc_first)+video.currentTime*1000:NaN;if(!Number.isFinite(now))return;
-  const frame=nativeArchiveCache.frames.filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];const motion=(nativeArchiveCache.motion||[]).filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];paintNativeObjects(overlay,video,combineObservations(frame,motion));
+  const frame=nativeArchiveCache.frames.filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];paintNativeObjects(overlay,video,frame);
 }
 function firmwareSettingsPanel(camera){
   const panel=element('details'),status=element('p'),endpoint=`/api/cameras/${camera.id}/firmware`;
@@ -1261,26 +1309,24 @@ function firmwareSettingsPanel(camera){
   panel.append(read,...fields.map(([,f])=>f.label),hash.label,targetVersion.label,file,send,status);return panel;
 }
 function metadataSettingsPanel(camera){
-  const panel=element('details');panel.append(element('summary','Metadane ONVIF i lokalna analiza'));const status=element('p'),fields=element('div');panel.append(status,fields);let loaded=false,busy=false;
+  const panel=element('details');panel.hidden=true;panel.append(element('summary','Metadane kamery'));const status=element('p'),fields=element('div');panel.append(status,fields);
   const endpoint=`/api/cameras/${camera.id}/metadata-settings`;
-  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Analiza obiektów (ONVIF i lokalna)','inline');label.prepend(enabled);const sourceMode=element('select');sourceMode.add(new Option('Automatycznie: ONVIF, następnie lokalna analiza','auto'));sourceMode.add(new Option('Lokalna analiza (także dla kamer z ONVIF)','local'));sourceMode.value=cfg.source_mode||'auto';const sourceLabel=element('label','Źródło analizy');sourceLabel.append(sourceMode);fields.append(label,sourceLabel,element('p','Metadane są przechowywane wraz z dostępnymi nagraniami.'),element('p','Lokalnie wykrywa osoby, twarze i tablice. Opcjonalny lokalny model COCO rozszerza klasy obiektów. Profile twarzy wymagają osobnego, świadomego zapisania przez administratora oraz modeli YuNet/SFace. Dopasowania są orientacyjne. Zmiana obrazu jest heurystyką, nie klasyfikacją AI.'));
-    const save=element('button','Zapisz ustawienia');save.type='button';save.onclick=async()=>{save.disabled=true;try{const result=await api(endpoint,'PATCH',{enabled:enabled.checked,rules:[],source_mode:sourceMode.value});status.textContent='Zapisano. Stan: '+(result.status?.state||'oczekiwanie');}catch(error){status.textContent=error.message;}finally{save.disabled=false;}};fields.append(save);status.textContent='Stan: '+(cfg.status?.state||(cfg.enabled?'oczekiwanie':'wyłączone'));loaded=true;
-  }catch(error){status.textContent=error.message;}finally{busy=false;}}
-  panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)void load();});return panel;
+  async function load(){try{const cfg=await api(endpoint);panel.hidden=!cfg.supported?.includes('boxes');if(panel.hidden)return;fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Zapisuj współrzędne przekazywane przez kamerę','inline');label.prepend(enabled);const save=element('button','Zapisz');save.type='button';save.onclick=async()=>{try{await api(endpoint,'PATCH',{enabled:enabled.checked,rules:[]});status.textContent='Zapisano.';}catch(error){status.textContent=error.message;}};fields.append(label,save);status.textContent='Wyłącznie dane kamery.';}catch(error){panel.hidden=true;}}
+  void load();panel.addEventListener('toggle',()=>{if(panel.open)void load();});return panel;
 }
 $('database-refresh').addEventListener('click',async()=>{try{const d=await api('/api/settings/database');$('database-status').textContent=`SQLite ${d.journal.toUpperCase()} · ${(d.bytes/1e6).toFixed(1)} MB · WAL ${(d.wal_bytes/1e6).toFixed(1)} MB · Nagrania ${d.recordings} · Zdarzenia ${d.events} · Wolne strony ${d.free_pages}/${d.page_count}`;}catch(error){$('database-status').textContent=error.message;}});
 for(const [id,operation] of [['database-check','quick_check'],['database-optimize','optimize']])$(id).addEventListener('click',async()=>{const status=$('database-maintenance-status');$('database-check').disabled=$('database-optimize').disabled=true;status.textContent='Trwa operacja bazy…';try{const result=await api('/api/settings/database/maintenance','POST',{operation});status.textContent=result.ok?(operation==='quick_check'?'Kontrola integralności: OK.':'Optymalizacja statystyk zakończona.'):'Kontrola integralności wykazała nieprawidłowości.';}catch(error){status.textContent=error.message;}finally{$('database-check').disabled=$('database-optimize').disabled=false;}});
 function eventSettingsPanel(camera){
-  const panel=element('details');panel.append(element('summary','Detekcja i zdarzenia AI'));
+  const panel=element('details');panel.hidden=true;panel.append(element('summary','Detekcja i zdarzenia AI'));
   const status=element('p','Odczyt ustawień…'),fields=element('div');panel.append(status,fields);let busy=false;
   const endpoint=`/api/cameras/${camera.id}/event-settings`;
-  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Rejestruj zdarzenia kamery','inline');label.prepend(enabled);fields.append(label);
-    const types=[];for(const [value,title] of Object.entries(eventLabels)){const check=element('input');check.type='checkbox';check.checked=true;check.disabled=true;const l=element('label',title,'inline');l.prepend(check);fields.append(l);types.push([value,check]);}
-    fields.append(element('p','Wszystkie rodzaje zdarzeń są rejestrowane. Metadane pozostają wraz z dostępnymi nagraniami.'),element('p','Zasłonięcie: także lokalna heurystyka jednolitego kadru; ciemność lub mgła mogą wywołać alarm.'));
+  async function load(){if(busy)return;busy=true;try{const cfg=await api(endpoint);panel.hidden=!cfg.supported?.length;if(panel.hidden)return;fields.replaceChildren();const enabled=element('input');enabled.type='checkbox';enabled.checked=cfg.enabled;const label=element('label','Rejestruj zdarzenia kamery','inline');label.prepend(enabled);fields.append(label);
+    const types=[];for(const [value,title] of Object.entries(eventLabels)){if(!cfg.supported?.includes(value))continue;const check=element('input');check.type='checkbox';check.checked=true;check.disabled=true;const l=element('label',title,'inline');l.prepend(check);fields.append(l);types.push([value,check]);}
+    fields.append(element('p','Wyłącznie potwierdzone zdarzenia kamery. Metadane pozostają wraz z dostępnymi nagraniami.'));
     const save=element('button','Zapisz ustawienia zdarzeń');save.type='button';save.addEventListener('click',async()=>{if(busy)return;busy=true;save.disabled=true;try{await api(endpoint,'PATCH',{enabled:enabled.checked,types:types.map(x=>x[0])});status.textContent='Zapisano. Zmiany zostaną zastosowane w tle.';}catch(error){status.textContent=error.message;}finally{busy=false;save.disabled=false;}});const refresh=element('button','Odśwież status');refresh.type='button';refresh.addEventListener('click',load);fields.append(save,refresh);
     const st=cfg.status;status.textContent=!cfg.enabled?'Rejestracja wyłączona.':st?`${st.state==='active'&&Date.now()/1000-st.checked_at<90?'Połączono':'Brak aktualnego połączenia'} · ${st.transport||'wykrywanie'} · ${new Date(st.checked_at*1000).toLocaleString()}`:'Oczekiwanie na wykrycie obsługi.';
   }catch(error){status.textContent=error.message;}finally{busy=false;}}
-  panel.addEventListener('toggle',()=>{if(panel.open)void load();});return panel;
+  void load();panel.addEventListener('toggle',()=>{if(panel.open)void load();});return panel;
 }
 $('event-filter').addEventListener('change',()=>{renderEvents();renderTimeline();});
 $('event-token-create').addEventListener('click',async()=>{if(!window.confirm('Utworzenie tokenu unieważni poprzedni. Kontynuować?'))return;try{const result=await api('/api/integrations/events/token','POST',{});$('event-token').value=result.token;notify('Token pokazany tylko teraz. Skopiuj go w bezpieczne miejsce.');}catch(error){notify(error.message,'error');}});
@@ -1487,58 +1533,6 @@ $('layout-select').addEventListener('change',()=>{renderCameras();queueLiveWorks
 $('layout-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const name=event.target.elements.name.value;const ids=Array.from($('layout-cameras').querySelectorAll('input:checked')).map(x=>Number(x.value));await api('/api/layouts','POST',{name,cameras:ids});event.target.reset();await refreshLayouts();notify('Układ zapisany.');}catch(error){notify(error.message,'error');}});
 $('manage-layout-select').addEventListener('change',()=>{$('delete-layout').disabled=!$('manage-layout-select').value;});
 $('delete-layout').addEventListener('click',async()=>{const id=$('manage-layout-select').value;if(!id)return;if(!window.confirm('Usunąć wybrany układ kamer?'))return;try{await api(`/api/layouts/${id}`,'DELETE');await refreshLayouts();renderCameras();queueLiveWorkspace();notify('Układ usunięty.');}catch(error){notify(error.message,'error');}});
-let analyticsRefreshGeneration=0,faceEnrollmentId=null,faceEnrollmentBusy=false;
-function resetFaceEnrollment(){
-  faceEnrollmentId=null;$('face-enrollment-title').textContent='Dodaj profil twarzy';$('face-enrollment-label').value='';$('face-enrollment-images').value='';$('face-enrollment-consent').checked=false;$('face-enrollment-status').textContent='';
-}
-function editFaceEnrollment(profile){
-  if(faceEnrollmentBusy)return;
-  resetFaceEnrollment();faceEnrollmentId=profile.id;$('face-enrollment-title').textContent='Aktualizuj zdjęcia: '+profile.label;$('face-enrollment-label').value=profile.label;
-  if($('face-enrollment-form').scrollIntoView)$('face-enrollment-form').scrollIntoView({block:'nearest'});
-}
-function faceFileBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>{const result=String(reader.result);resolve(result.slice(result.indexOf(',')+1));};reader.onerror=()=>reject(new Error('Nie można odczytać zdjęcia.'));reader.readAsDataURL(file);});}
-$('face-enrollment-cancel').addEventListener('click',()=>{if(!faceEnrollmentBusy)resetFaceEnrollment();});
-$('face-enrollment-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(faceEnrollmentBusy)return;
-  const status=$('face-enrollment-status'),files=Array.from($('face-enrollment-images').files||[]),label=$('face-enrollment-label').value.trim(),consent=$('face-enrollment-consent').checked;
-  if(!label||!consent||files.length<1||files.length>5||files.some(f=>!f.size||f.size>8*1024*1024)||files.reduce((n,f)=>n+f.size,0)>20*1024*1024){status.textContent='Podaj nazwę, zgodę i od 1 do 5 zdjęć w podanym limicie.';return;}
-  if(faceEnrollmentId&&!window.confirm('Zastąpić wszystkie dotychczasowe próbki tego profilu nowymi?'))return;
-  const id=faceEnrollmentId;faceEnrollmentBusy=true;for(const key of ['label','images','consent','save','cancel'])$('face-enrollment-'+key).disabled=true;
-  status.textContent='Przesyłanie i analiza zdjęć...';
-  try{
-    const images=[];for(const file of files)images.push(await faceFileBase64(file));
-    await api('/api/admin/analytics/faces'+(id?'/'+encodeURIComponent(id):''),id?'PUT':'POST',{label,consent,images});
-    resetFaceEnrollment();await refreshAnalyticsAdmin();status.textContent=id?'Zdjęcia profilu zaktualizowane.':'Profil zapisany.';
-  }catch(error){status.textContent=error.message;}
-  finally{faceEnrollmentBusy=false;for(const key of ['label','images','consent','save','cancel'])$('face-enrollment-'+key).disabled=false;}
-});
-async function refreshAnalyticsAdmin(){
-  const generation=++analyticsRefreshGeneration,button=$('analytics-refresh'),status=$('analytics-status');
-  button.disabled=true;status.textContent='Sprawdzanie...';$('analytics-models').replaceChildren();$('analytics-profiles').replaceChildren();
-  try{
-    const result=await api('/api/admin/analytics');
-    if(generation!==analyticsRefreshGeneration)return;
-    const names={coco:'COCO (80 klas)','face-detector':'YuNet (detekcja twarzy)','face-recognizer':'SFace (dopasowanie profili)'},states={present:'Plik dostępny - inferencja niezweryfikowana',missing:'Brak pliku',untrusted:'Nieprawidłowy lub niezaufany plik'};
-    for(const [key,name] of Object.entries(names)){
-      const item=result.models?.[key];$('analytics-models').append(element('p',name+': '+(states[item?.state]||'Nieznany stan')));
-    }
-    const profiles=$('analytics-profiles');profiles.append(element('h3','Zapisane profile twarzy'));
-    if(!result.profiles.length)profiles.append(element('p','Brak zapisanych profili.'));
-    for(const profile of result.profiles){
-      const row=element('div',null,'timeline-actions'),remove=element('button','Usuń profil');remove.type='button';
-      const edit=element('button','Aktualizuj zdjęcia');edit.type='button';edit.addEventListener('click',()=>editFaceEnrollment(profile));
-      row.append(element('span',profile.label+' - próbki: '+profile.samples),remove,edit);profiles.append(row);
-      remove.addEventListener('click',async()=>{
-        if(faceEnrollmentBusy)return;
-        if(!window.confirm('Usunąć profil i jego szablony? Historyczna etykieta przestanie być wyświetlana.'))return;
-        remove.disabled=true;try{await api('/api/admin/analytics/faces/'+encodeURIComponent(profile.id),'DELETE');if(faceEnrollmentId===profile.id)resetFaceEnrollment();await refreshAnalyticsAdmin();}catch(error){status.textContent=error.message;remove.disabled=false;}
-      });
-    }
-    status.textContent='Stan odczytany. Sprawdzenie inferencji: analytics-model-status --verify (lokalny root).';
-  }catch(error){if(generation===analyticsRefreshGeneration)status.textContent=error.message;}
-  finally{if(generation===analyticsRefreshGeneration)button.disabled=false;}
-}
-$('analytics-refresh').addEventListener('click',refreshAnalyticsAdmin);
 const adminSections=['overview','cameras','users','storage','network','integrations','system','audit'];
 function selectAdminSection(section){
   if(!adminSections.includes(section))return;
@@ -1716,6 +1710,7 @@ async function refreshServices(){
     }
   }
 }
+setInterval(recoverLivePlayers,5000);
 setInterval(async()=>{
   if(!me||document.hidden||statusRefreshPending)return;
   statusRefreshPending=true;
@@ -1764,7 +1759,8 @@ $('upgrade-form').addEventListener('submit',async(event)=>{
 });
 $('rollback-form')?.addEventListener('submit',async event=>{event.preventDefault();const form=event.target,button=form.querySelector('button');if(!form.elements.confirm.checked||!form.elements.point.value)return;button.disabled=true;try{await api('/api/updates','POST',{restore_point:form.elements.point.value,expected:form.dataset.version,confirm:true});form.elements.confirm.checked=false;watchUpgrade();await refreshUpgradeStatus();notify('Przywrócenie wersji oczekuje na wykonanie.');}catch(error){notify(error.message,'error');button.disabled=false;}});
 let syncItems=[],syncTimer=null,syncSeconds=0,syncStarted=0,syncBase=0,syncPlaying=false,syncDay='',syncGeneration=0,syncLoading=null;
-function stopSync(){syncGeneration++;syncLoading=null;if(syncTimer)clearInterval(syncTimer);syncTimer=null;syncPlaying=false;for(const item of syncItems){item.active=null;item.video.pause();item.video.removeAttribute('src');}syncItems=[];$('sync-grid').replaceChildren();}
+function setSyncSeekEnabled(enabled){for(const button of document.querySelectorAll('[data-sync-seek]'))button.disabled=!enabled;}
+function stopSync(){setSyncSeekEnabled(false);syncGeneration++;syncLoading=null;if(syncTimer)clearInterval(syncTimer);syncTimer=null;syncPlaying=false;for(const item of syncItems){item.active=null;item.video.pause();item.video.removeAttribute('src');}syncItems=[];$('sync-grid').replaceChildren();}
 function openSync(){
   view('sync');$('sync-zone').textContent='Strefa kamer: '+me.timezone;$('sync-start').value=cameraDay()+'T12:00:00';
   const box=$('sync-cameras');box.replaceChildren();
@@ -1791,7 +1787,7 @@ async function prepareSync(){
     const box=element('article',null,'camera sync-card');const header=element('div',null,'sync-card-heading');const title=element('strong',camera.name,'sync-card-name');title.title=camera.name;const status=element('span','Gotowe','sync-card-status');status.dataset.state='ready';header.append(title,status);const video=element('video');video.controls=true;video.playsInline=true;video.muted=true;video.className='sync-video';video.setAttribute('aria-label',camera.name+' - archiwum');box.append(header,video);grid.append(box);
     syncItems.push({id:camera.id,video,status,records:list,active:null});
   }
-  $('sync-clock').textContent=syncClock(syncSeconds);
+  $('sync-clock').textContent=syncClock(syncSeconds);setSyncSeekEnabled(syncItems.length>0);
 }
 async function loadSyncDay(day){
   if(syncLoading)return;const generation=syncGeneration,items=syncItems.slice();syncLoading=day;
@@ -1804,21 +1800,42 @@ async function loadSyncDay(day){
   }catch(error){if(generation===syncGeneration){pauseSync();notify(error.message,'error');}}
   finally{if(generation===syncGeneration)syncLoading=null;}
 }
-function tickSync(){
-  if(!syncPlaying)return;
-  syncSeconds=syncBase+(performance.now()-syncStarted)/1000;
-  const day=cameraDay(syncSeconds*1000);$('sync-clock').textContent=syncClock(syncSeconds);
-  if(day!==syncDay){loadSyncDay(day);return;}
+function syncCurrentSeconds(){return syncPlaying?syncBase+(performance.now()-syncStarted)/1000:syncSeconds;}
+function renderSync(force=false){
+  if(syncLoading||cameraDay(syncSeconds*1000)!==syncDay)return;
   for(const item of syncItems){
     const record=item.records.find(r=>containsInstant(r,syncSeconds));
     if(!record||record.utc_second){if(item.active!==null){item.video.pause();item.video.removeAttribute('src');item.active=null;}setSyncStatus(item,record?'Niejednoznaczny czas':'Brak nagrania','gap');continue;}
-    const offset=Math.max(0,syncSeconds-Date.parse(record.utc_first)/1000);
-    if(item.active!==record.id){item.active=record.id;item.video.src=`/api/recordings/${record.id}/file`;item.video.addEventListener('loadedmetadata',()=>{if(syncPlaying&&item.active===record.id&&syncItems.includes(item)){item.video.currentTime=offset;item.video.play().catch(()=>{});}},{once:true});}
-    else if(item.video.readyState>=1){if(Math.abs(item.video.currentTime-offset)>1.5)item.video.currentTime=offset;if(item.video.paused)item.video.play().catch(()=>{});}
-    if(item.video.error)setSyncStatus(item,'Błąd nagrania','error');else if(item.video.readyState<2||item.video.paused)setSyncStatus(item,'Wczytywanie','loading');else setSyncStatus(item,'Odtwarzanie','playing');
+    const align=(initial=false)=>{
+      if(item.active!==record.id||!syncItems.includes(item)||syncLoading||cameraDay(syncSeconds*1000)!==syncDay)return;
+      const now=syncCurrentSeconds();if(!containsInstant(record,now))return;
+      const offset=Math.max(0,now-Date.parse(record.utc_first)/1000);
+      if(initial||force||Math.abs(item.video.currentTime-offset)>1.5)item.video.currentTime=offset;
+      if(syncPlaying){if(item.video.paused)item.video.play().catch(()=>{});}else item.video.pause();
+    };
+    if(item.active!==record.id){item.active=record.id;const request=(item.request||0)+1;item.request=request;item.video.addEventListener('loadedmetadata',()=>{if(item.request===request){align(true);if(!syncPlaying&&item.active===record.id&&!syncLoading)setSyncStatus(item,'Pauza','ready');}},{once:true});item.video.src=`/api/recordings/${record.id}/file`;}
+    else if(item.video.readyState>=1)align();
+    if(item.video.error)setSyncStatus(item,'Błąd nagrania','error');else if(item.video.readyState<2)setSyncStatus(item,'Wczytywanie','loading');else if(!syncPlaying)setSyncStatus(item,'Pauza','ready');else if(item.video.paused)setSyncStatus(item,'Wczytywanie','loading');else setSyncStatus(item,'Odtwarzanie','playing');
   }
 }
-function pauseSync(){if(syncPlaying)syncSeconds=syncBase+(performance.now()-syncStarted)/1000;syncPlaying=false;if(syncTimer)clearInterval(syncTimer);syncTimer=null;for(const item of syncItems){item.video.pause();if(item.active!==null&&!item.video.error)setSyncStatus(item,'Pauza','ready');}}
+function tickSync(){
+  if(!syncPlaying)return;
+  syncSeconds=syncCurrentSeconds();const day=cameraDay(syncSeconds*1000);$('sync-clock').textContent=syncClock(syncSeconds);
+  if(day!==syncDay){loadSyncDay(day);return;}renderSync();
+}
+async function seekSync(delta){
+  if(!syncItems.length||!Number.isFinite(delta))return;
+  syncSeconds=syncCurrentSeconds()+delta;syncBase=syncSeconds;syncStarted=performance.now();
+  $('sync-clock').textContent=syncClock(syncSeconds);
+  const day=cameraDay(syncSeconds*1000);
+  // Invalidate any in-flight date request, including a seek back to the loaded day.
+  const generation=++syncGeneration;syncLoading=null;
+  if(day!==syncDay)await loadSyncDay(day);
+  if(generation!==syncGeneration)return;
+  syncSeconds=syncCurrentSeconds();renderSync(true);
+}
+function pauseSync(){if(syncPlaying)syncSeconds=syncCurrentSeconds();syncPlaying=false;if(syncTimer)clearInterval(syncTimer);syncTimer=null;for(const item of syncItems){item.video.pause();if(item.active!==null&&!item.video.error)setSyncStatus(item,'Pauza','ready');}}
+for(const button of document.querySelectorAll('[data-sync-seek]'))button.addEventListener('click',()=>{seekSync(Number(button.dataset.syncSeek)).catch(error=>notify(error.message,'error'));});
 $('sync-load').addEventListener('click',async()=>{try{await prepareSync();notify('Widok przygotowany.');}catch(error){notify(error.message,'error');}});
 $('sync-play').addEventListener('click',()=>{if(syncPlaying)return;if(!syncItems.length){notify('Najpierw przygotuj widok.');return;}syncBase=syncSeconds;syncStarted=performance.now();syncPlaying=true;tickSync();syncTimer=setInterval(tickSync,500);});
 $('sync-pause').addEventListener('click',pauseSync);
@@ -1938,6 +1955,5 @@ $('export-form').addEventListener('submit',async(event)=>{
   }catch(error){if(generation===exportViewGeneration&&camera===activeCamera)notify(error.message,'error');}
   finally{if(generation===exportViewGeneration)exportSubmitting=false;}
 });
-setInterval(async()=>{if(!me||document.hidden)return;try{const fresh=(await api('/api/cameras')).cameras;for(const camera of fresh){const card=document.querySelector(`.camera[data-camera-id="${camera.id}"]`);const badge=card&&card.querySelector('.health');if(badge)badge.textContent=cameraHealthText(camera);}}catch(error){notify(error.message,'error');}},60000);
 if(typeof window.addEventListener==='function'){window.addEventListener('pagehide',()=>stopTalkback());document.addEventListener('visibilitychange',()=>{if(document.hidden)stopTalkback();});}
 start();

@@ -1,5 +1,7 @@
 # Sunhill NVR 1.1.x - konfiguracja analityki i odbiór kandydata
 
+**Dokument historyczny 1.1.x. Od 1.2.0 lokalne modele, profile, OCR i detekcja zostały usunięte; nie stosować poniższej instrukcji do 1.2.0. Obowiązuje wyłącznie camera-native.**
+
 ## Status
 
 Paczka 1.1.2 jest kandydatem instalacyjnym, nie wydaniem zweryfikowanym przez CI. Zawiera pełną historię Git i kod poprzednich partii WIP. Nie dołącza wag ONNX ani danych biometrycznych. Nie jest certyfikowanym klientem ONVIF Profile M/T. Nie przełączać istniejącego archiwum produkcyjnego bez odbioru na kopii i kopii zapasowej.

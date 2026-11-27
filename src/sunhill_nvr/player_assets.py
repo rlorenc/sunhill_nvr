@@ -22,6 +22,37 @@ _SYNC_REPLACEMENT = '''{ // Sunhill NVR: smooth live playback (seconds).
                     if (last >= 0) {
                         const liveEnd = ranges.end(last);
                         const liveStart = Math.max(start, ranges.start(last));
+                        if (this.sunhillBufferTarget) {
+                            // Low-bitrate cameras can deliver whole GOPs in bursts.
+                            // Prime a contiguous jitter buffer before playing; a
+                            // short starvation must not turn into a periodic seek.
+                            const source = video.srcObject || video.src;
+                            if (!this.sunhillBufferInitialized || this.sunhillBufferSource !== source) {
+                                this.sunhillBufferInitialized = true;
+                                this.sunhillBufferSource = source;
+                                this.sunhillBufferWaiting = true;
+                            }
+                            let index = -1;
+                            for (let i = 0; i < ranges.length; i++) {
+                                if (video.currentTime >= ranges.start(i) && video.currentTime < ranges.end(i)) index = i;
+                            }
+                            const ahead = index >= 0 ? ranges.end(index) - video.currentTime : 0;
+                            if (!video.seeking && (index < 0 || video.currentTime < start || (ahead < 0.25 && video.readyState < 3))) {
+                                this.sunhillBufferWaiting = true;
+                            }
+                            if (this.sunhillBufferWaiting) {
+                                if (!video.paused) video.pause();
+                                const target = this.sunhillBufferTarget;
+                                const canContinue = index >= 0 && video.currentTime >= start && ahead >= target;
+                                const canJump = liveEnd - liveStart >= target && (index < 0 || index !== last || video.currentTime < start);
+                                if (!video.seeking && (canContinue || canJump)) {
+                                    if (!canContinue) video.currentTime = Math.max(liveStart, liveEnd - target);
+                                    this.sunhillBufferWaiting = false;
+                                    this.play();
+                                }
+                            }
+                            if (video.playbackRate !== 1) video.playbackRate = 1;
+                        } else {
                         // Only seek after eviction or a long discontinuity.
                         // Never seek into a hole between buffered ranges.
                         let inRange = false;
@@ -36,6 +67,7 @@ _SYNC_REPLACEMENT = '''{ // Sunhill NVR: smooth live playback (seconds).
                         const ahead = liveEnd - video.currentTime;
                         const rate = ahead < 2 ? 0.95 : ahead > 3 ? 1.05 : 1.0;
                         if (video.playbackRate !== rate) video.playbackRate = rate;
+                        }
                     }
                     }'''
 _IMPORT = re.compile(r'''(['"])(?:\./|/)?video-rtc\.js(?:\?[^'"\r\n]*)?\1''')
@@ -47,7 +79,7 @@ def patch_rtc(source: str) -> str:
     if (source.count(_TRIM) != 1 or len(_SYNC.findall(source)) != 1
             or source.index(_TRIM) > _SYNC.search(source).start()):
         return source + '\n;globalThis.sunhillMsePolicy = "native";\n'
-    source = source.replace(_TRIM, 'const start = end - 10;', 1)
+    source = source.replace(_TRIM, 'const start = this.sunhillBufferTarget ? end - 18 : end - 10;', 1)
     source = _SYNC.sub(lambda _: _SYNC_REPLACEMENT, source, count=1)
     return source + '\n;globalThis.sunhillMsePolicy = "smooth";\n'
 

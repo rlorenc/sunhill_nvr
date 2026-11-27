@@ -15,7 +15,7 @@ TARGET_SQL='SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth,s
 
 
 def fingerprint(row):
-    return hashlib.sha256(json.dumps([3,*row],separators=(',',':')).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([4,*row],separators=(',',':')).encode()).hexdigest()
 
 
 def snapshot(db,cid):
@@ -58,6 +58,8 @@ def persist(db,cid,row,data,now=None,*,expected=_ANY):
         db.execute('BEGIN IMMEDIATE')
         if db.execute(TARGET_SQL,(cid,)).fetchone()!=row:return False
         if expected is not _ANY and snapshot(db,cid)!=expected:return False
+        from . import native_capabilities
+        native_capabilities.record(db,cid,data.get('native_events',[]))
         merge_state(data,cached(db,cid,row))
         store(db,cid,row,data,now)
     return True
@@ -142,9 +144,16 @@ def diagnose(row):
     try:
         with camera_control.Reolink(row[0]) as client:
             abilities=reported_abilities(client)
+            from . import camera_events
+            native_events=set()
+            try:native_events.update(camera_events.parse_cgi(client.get('GetAiState',action=0)['value']))
+            except (camera_control.ControlError,KeyError,TypeError,AttributeError):pass
+            try:
+                if client.get('GetMdState',action=0)['value'].get('state') in (0,1):native_events.add('motion')
+            except (camera_control.ControlError,KeyError,TypeError,AttributeError):pass
             result=camera_control.capabilities(client)
             settings,partial=camera_settings.read(client)
-            result.update(settings=settings,partial=result.get('partial',False) or partial)
+            result.update(native_events=sorted(native_events),settings=settings,partial=result.get('partial',False) or partial)
             filter_abilities(result,abilities)
     except camera_control.ControlError as exc:
         result={'controls':{},'settings':[],'partial':True,'message':str(exc)}

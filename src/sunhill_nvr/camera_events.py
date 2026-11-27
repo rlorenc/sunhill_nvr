@@ -35,7 +35,9 @@ def options(db,cid):
     row=db.execute('SELECT enabled,mask,retention_days FROM camera_event_options WHERE camera_id=?',(cid,)).fetchone()
     enabled,mask,days=row or (1,DEFAULT_MASK,365)
     status=db.execute('SELECT transport,state,checked_at,supported FROM camera_event_status WHERE camera_id=?',(cid,)).fetchone()
-    return {'enabled':bool(enabled),'types':list(TYPES),'retention_policy':'archive',
+    from . import native_capabilities
+    supported=native_capabilities.supported(db,cid)
+    return {'enabled':bool(enabled),'types':list(TYPES),'supported':[t for t in TYPES if t in supported],'retention_policy':'archive',
             'status':{'transport':status[0],'state':status[1],'checked_at':status[2],'supported':json.loads(status[3])} if status else None}
 
 
@@ -98,6 +100,8 @@ def snapshot(db,cid,url,states,transport,now=None):
                 eid,last=active[kind]
                 if last is None or now-last>=15:db.execute('UPDATE event_markers SET last_seen=? WHERE id=?',(now,eid))
             else:db.execute('INSERT OR IGNORE INTO event_markers(camera_id,started_at,event_type,source,last_seen) VALUES(?,?,?,?,?)',(cid,now,kind,SOURCE,now))
+        from . import native_capabilities
+        native_capabilities.record(db,cid,({k for k,v in states.items() if v} if transport=='baichuan' else set(states)) & set(TYPES))
         previous=cfg['status']; supported=sorted((({k for k,v in states.items() if v} if transport=='baichuan' else set(states)) | set(previous['supported'] if previous and previous['transport']==transport else [])) & set(TYPES))
         if not previous or previous['state']!='active' or previous['transport']!=transport or now-previous['checked_at']>=30 or supported!=previous['supported']:
             db.execute('INSERT INTO camera_event_status VALUES(?,?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET transport=excluded.transport,state=excluded.state,checked_at=excluded.checked_at,supported=excluded.supported',(cid,transport,'active',now,json.dumps(supported)))
