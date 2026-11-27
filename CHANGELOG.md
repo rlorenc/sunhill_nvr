@@ -1,5 +1,12 @@
 # Historia zmian Sunhill NVR
 
+## 1.2.1 - kandydat instalacyjny (baza a57cdf3)
+
+- Poz. 19, 39, 50: dodano natywny odczyt ramek Reolink Motion Boxes w BcMedia (Baichuan TCP 9000, Preview 3, samodzielna kamera ch0, TLV/LZ4) z zachowaniem ONVIF i dotychczasowych alarmów. Współrzędne osoby, pojazdu, zwierzęcia są odczytywane z metadanych urządzenia, bez analizy pikseli. Pierwszy wybór substream, main w razie niepowodzenia; potwierdzony profil zapisany w istniejącej SQLite per odcisk konfiguracji. Znane wcześniej ramki ONVIF mają pierwszeństwo. Bez nowych procesów FFmpeg, ale dodatkowa sesja przesyła skompresowany strumień, który jest odrzucany po odczycie nagłówka. Niezależny od logowania worker; bez zmian nagrywania, retencji, uprawnień, rollbacku lub schematu SQLite.
+- Brak stabilnego ID obiektu w obsłużonym wariancie BcMedia: brak sztucznych śladów. Rozpoznawanie twarzy/tablic nadal tylko z rzeczywistych obsługiwanych metadanych ONVIF, nie z tego wariantu Baichuan. Czas z kamery gdy wiarygodny, w przeciwnym wypadku znacznik odbioru; synchronizacja obrazu z osobnej sesji RTSP i bufora Live nie jest gwarantowana co do klatki. Nie wstecznie uzupełnia się archiwum. Nieobsłużone formaty nie generują ramek. Szczegóły, licencja i ograniczenia: [docs/baichuan-motion-boxes.md](docs/baichuan-motion-boxes.md).
+- Weryfikacja lokalna: 58 zaliczonych testów celowanych (5 nowych, w tym zarejestrowany nagłówek urządzenia i symulacja Preview; pozostałe: Baichuan/ONVIF, zdarzenia, retencja, discovery, wyszukiwanie, instalator, wydanie). Test DOM i Chromium przełącznika ramek, składnia JS/Bash. Nie wykonywano pełnej regresji, odbioru fizycznych Reolink ani CI Ubuntu 26.04. Statusy K/C/N niezmienione, brak publikacji zdalnej.
+
+
 ## 1.2.0 - kandydat instalacyjny (baza 144b3d6)
 
 - Decyzja użytkownika: wyłącznie camera-native. Usunięto kod lokalnej detekcji ruchu/zasłonięcia, inferencji AI, OCR, rozpoznawania tożsamości, modeli, profili twarzy i nieaktywnych reguł przestrzennych, ich interfejsy WWW/CLI oraz zależności OpenCV/Tesseract z instalatora i aktualizatora. Brak lokalnego fallbacku, również przy awarii lub braku metadanych. Nagrywanie RTSP i niezależne sondy dostępności/operacje multimedialne bez zmian.

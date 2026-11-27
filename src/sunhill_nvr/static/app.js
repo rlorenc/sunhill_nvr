@@ -1260,7 +1260,7 @@ function paintNativeObjects(overlay,video,frame,tracks=null){
   const seen=new Set();
   for(const obj of frame.objects||[]){if(removedDetection(obj.kind))continue;const b=obj.box;if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite))continue;const [bx,by,bw,bh]=b;if(bx<0||by<0||bw<=0||bh<=0||bx+bw>1.000001||by+bh>1.000001)continue;
     const box=element('span',null,'detection-box');box.dataset.kind=obj.kind;Object.assign(box.style,{left:(x+bx*w)+'px',top:(y+by*h)+'px',width:bw*w+'px',height:bh*h+'px'});overlay.append(box);seen.add(obj.id);
-    if(tracks){let path=tracks.paths.get(obj.id)||[];if(path.length&&frame.stamp_ms-path[path.length-1].t>3000)path=[];if(!path.length||path[path.length-1].t<frame.stamp_ms)path.push({t:frame.stamp_ms,x:bx+bw/2,y:by+bh/2});path=path.slice(-12);tracks.paths.set(obj.id,path);for(const point of path){const dot=element('span',null,'native-track-dot');dot.style.left=(x+point.x*w)+'px';dot.style.top=(y+point.y*h)+'px';overlay.append(dot);}}
+    if(tracks&&obj.tracked!==false){let path=tracks.paths.get(obj.id)||[];if(path.length&&frame.stamp_ms-path[path.length-1].t>3000)path=[];if(!path.length||path[path.length-1].t<frame.stamp_ms)path.push({t:frame.stamp_ms,x:bx+bw/2,y:by+bh/2});path=path.slice(-12);tracks.paths.set(obj.id,path);for(const point of path){const dot=element('span',null,'native-track-dot');dot.style.left=(x+point.x*w)+'px';dot.style.top=(y+point.y*h)+'px';overlay.append(dot);}}
   }
   if(tracks)for(const key of tracks.paths.keys())if(!seen.has(key))tracks.paths.delete(key);
   overlay.hidden=!overlay.children.length;

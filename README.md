@@ -1,5 +1,7 @@
 # Sunhill NVR
 
+1.2.1: natywne Reolink Motion Boxes (BcMedia), bez lokalnej analizy AI. [Obsługa i ograniczenia](docs/baichuan-motion-boxes.md).
+
 **Niezależny rejestrator sieciowy IP do monitoringu wizyjnego.**
 
 Sunhill NVR to samodzielnie hostowany system monitoringu dla Ubuntu Server, łączący podgląd na żywo, ciągłe nagrywanie, przeglądanie archiwum i zarządzanie kamerami w jednej aplikacji webowej. Dane, nagrania i konfiguracja pozostają na własnym serwerze, bez konieczności korzystania z chmury producenta kamer.

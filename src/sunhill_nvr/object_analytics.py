@@ -11,7 +11,7 @@ import threading
 import time
 import secrets
 import logging
-from . import database, workers, onvif_metadata, security, native_capabilities
+from . import database, workers, onvif_metadata, security, native_capabilities, baichuan_metadata, device_diagnosis
 
 MAX_CAMERAS=32
 
@@ -63,7 +63,7 @@ def snapshot(db,cid,url,stamp,objects,session,received=None, *, source="active",
         if expected_fingerprint is not None and native_capabilities.key(db,cid)!=expected_fingerprint:raise InterruptedError()
         if db.execute('SELECT d.main_url,c.enabled,COALESCE(o.enabled,1) FROM camera_details d JOIN cameras c ON c.id=d.camera_id LEFT JOIN camera_metadata_options o ON o.camera_id=c.id WHERE c.id=?',(cid,)).fetchone()!=(url,1,1):raise InterruptedError()
         if objects:
-            native_capabilities.record(db,cid,{'boxes'}|{o['kind'] for o in objects if o['kind'] not in ('object','plate')}|({'plate'} if any(o.get('plate_number') for o in objects) else set()))
+            native_capabilities.record(db,cid,({'baichuan_boxes','baichuan_'+session.split(':')[2]+'_boxes'} if session.startswith(('native:baichuan:sub:','native:baichuan:main:')) else set())|{'boxes'}|{o['kind'] for o in objects if o['kind'] not in ('object','plate')}|({'plate'} if any(o.get('plate_number') for o in objects) else set()))
         current=db.execute('SELECT stamp_ms,objects_json,session FROM camera_metadata_latest WHERE camera_id=?',(cid,)).fetchone()
         if current and current[2]==session and stamp<=current[0]:return False
         raw=json.dumps(objects,separators=(',',':'))
@@ -98,8 +98,13 @@ def history(db,cid,stamp,user=None):
 
 
 def run_camera(config,cid,url,stop,fingerprint=None):
+    # One native metadata transport per camera at a time. Prefer BcMedia for
+    # positively identified Reolink devices; preserve standard ONVIF elsewhere.
     while not stop.is_set() and workers.writes_permitted():
-        session=secrets.token_hex(8);last=0
+        last=0;session='';native_attempted=False
+        def reset(transport):
+            nonlocal last,session
+            last=0;session=transport+':'+secrets.token_hex(8)
         def ready():
             with contextlib.closing(database.open_db(config.database)) as db:
                 if not status(db,cid,url,'streaming',expected_fingerprint=fingerprint):raise InterruptedError()
@@ -110,24 +115,49 @@ def run_camera(config,cid,url,stop,fingerprint=None):
             if now-last<.2:return
             last=now
             with contextlib.closing(database.open_db(config.database)) as db:snapshot(db,cid,url,stamp,objects,session,expected_fingerprint=fingerprint)
-        try:
+        def native():
+            nonlocal native_attempted
+            native_attempted=True
+            for profile in profiles:
+                if stop.is_set() or not workers.writes_permitted():raise InterruptedError()
+                reset('baichuan:'+profile)
+                try:
+                    baichuan_metadata.run(url,stop,emit,ready,profile)
+                    return
+                except (OSError,ValueError):continue
+        def onvif():
+            reset('onvif')
             try:
                 with onvif_metadata.Client(url) as client:client.run(stop,emit,ready)
-            except (OSError,ValueError):
-                # A camera may expose its analytics on a separate Media2
-                # profile. Never mix coordinate systems from another source.
-                if stop.is_set():raise InterruptedError()
-                from . import onvif_capabilities
-                with contextlib.closing(database.open_db(config.database)) as db:
-                    target=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=? AND main_url=?',(cid,url)).fetchone()
-                if target and target[1]:
-                    for metadata_url in onvif_capabilities.metadata_streams(target):
-                        if stop.is_set():raise InterruptedError()
-                        session=secrets.token_hex(8);last=0
-                        try:
-                            with onvif_metadata.Client(metadata_url) as client:client.run(stop,emit,ready)
-                            break
-                        except (OSError,ValueError):continue
+                return
+            except (OSError,ValueError):pass
+            if stop.is_set():raise InterruptedError()
+            from . import onvif_capabilities
+            with contextlib.closing(database.open_db(config.database)) as db:
+                target=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=? AND main_url=?',(cid,url)).fetchone()
+            if target and target[1]:
+                for metadata_url in onvif_capabilities.metadata_streams(target):
+                    if stop.is_set():raise InterruptedError()
+                    reset('onvif')
+                    try:
+                        with onvif_metadata.Client(metadata_url) as client:client.run(stop,emit,ready)
+                        return
+                    except (OSError,ValueError):continue
+        try:
+            with contextlib.closing(database.open_db(config.database)) as db:
+                row=db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()
+                diagnosis=device_diagnosis.cached(db,cid,row) if row else None
+                manufacturer=((diagnosis or {}).get('device') or {}).get('manufacturer','').lower()
+                event=db.execute('SELECT transport FROM camera_event_status WHERE camera_id=?',(cid,)).fetchone()
+                caps=native_capabilities.supported(db,cid)
+                profiles=('main','sub') if 'baichuan_main_boxes' in caps and 'baichuan_sub_boxes' not in caps else ('sub','main')
+                known='baichuan_boxes' in caps or manufacturer.startswith('reolink') or bool(event and event[0] in ('baichuan','cgi'))
+            # Do not replace already proven richer ONVIF observations with
+            # a Baichuan format that currently carries only three classes.
+            prefer_onvif='boxes' in caps and 'baichuan_boxes' not in caps
+            if known and not prefer_onvif:native()
+            if not stop.is_set():onvif()
+            if not stop.is_set() and not native_attempted and (known or not manufacturer):native()
         except InterruptedError:break
         except (OSError,ValueError,sqlite3.Error):pass
         finally:
@@ -135,8 +165,8 @@ def run_camera(config,cid,url,stop,fingerprint=None):
                 with contextlib.closing(database.open_db(config.database)) as db:status(db,cid,url,'unavailable',expected_fingerprint=fingerprint)
             except (OSError,ValueError,sqlite3.Error):pass
         if stop.is_set() or not workers.writes_permitted():break
-        # No local fallback, even when metadata is unavailable.
-        stop.wait(20)
+        # Unsupported previews are re-probed at a conservative interval.
+        stop.wait(120 if native_attempted else 20)
 
 
 def supervise(config,stop):
