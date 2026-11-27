@@ -11,7 +11,7 @@ class DeploymentTests(unittest.TestCase):
         root=Path(t);generate(cfg,root);self.assertTrue((root/'units/sunhill-web.service').is_file());self.assertTrue((root/'nginx.conf').is_file())
         import json
         from sunhill_nvr import lifecycle
-        manifest=json.loads((root/'lifecycle.json').read_text());self.assertEqual(manifest,lifecycle.default())
+        manifest=json.loads((root/'lifecycle.json').read_text());self.assertEqual(manifest,lifecycle.default(rtsp_only=True))
         lifecycle.validate(manifest,{p.name for p in (root/'units').iterdir()})
         with self.assertRaises(FileExistsError):generate(cfg,root)
     with tempfile.TemporaryDirectory() as t:

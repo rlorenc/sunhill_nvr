@@ -1,5 +1,4 @@
 """Run only after ubuntu_install_smoke.sh provisions a disposable runner."""
-import ftplib
 import io
 import json
 import os
@@ -63,65 +62,27 @@ try:
     response=connection.getresponse();response.read()
     if response.status!=200:raise RuntimeError(f'mixed-case Host header failed: {response.status}')
 finally:connection.close()
-# A fresh installation has no FTP accounts. Its real daemon must nevertheless
-# greet localhost, reject unauthenticated users and reject non-allowlisted IPs.
-with ftplib.FTP() as initial_ftp:
-    if not initial_ftp.connect('127.0.0.1',21,timeout=5).startswith('220'):
-        raise RuntimeError('fresh FTP daemon returned no complete greeting')
-    try:initial_ftp.login('nonexistent-ci-account','not-a-valid-password')
-    except ftplib.error_perm:pass
-    else:raise RuntimeError('fresh FTP allowed an unknown account')
-with ftplib.FTP() as outside:
-    try:outside.connect('127.0.0.1',21,timeout=5,source_address=('127.0.0.2',0))
-    except (ftplib.error_perm,ftplib.error_temp,EOFError,ConnectionResetError):pass
-    else:raise RuntimeError('FTP allowed source outside configured allowlist')
+with socket.socket() as conn:
+    conn.settimeout(5)
+    if conn.connect_ex(('127.0.0.1',21))==0:raise RuntimeError('Unexpected FTP listener')
 request('/api/setup','POST',{'token':token,'username':'admin','password':'ciAdm6'},expected=201)
 request('/api/login','POST',{'username':'admin','password':'ciAdm6'})
-camera=request('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://127.0.0.1:8554/test','recording':'ftp'},expected=201)['id']
-request('/api/ftp-accounts','POST',{'username':'camera','password':'ciFtp6','camera_id':None},expected=201)
-ftp=None;deadline=time.monotonic()+90
-while time.monotonic()<deadline:
-    try:
-        ftp=ftplib.FTP();ftp.connect('127.0.0.1',21,timeout=5);ftp.login('camera','ciFtp6');break
-    except ftplib.all_errors:
-        if ftp:
-            try:ftp.close()
-            except OSError:pass
-        ftp=None;time.sleep(3)
-if ftp is None:raise RuntimeError('FTP account was not activated')
-# Stop both dynamically managed services and prove the periodic controller
-# starts them again without an edit to camera or FTP configuration.
-ftp.quit();ftp=None
-subprocess.run(['sudo','systemctl','stop','sunhill-go2rtc.service','sunhill-ftp.service'],check=True,timeout=60)
+camera=request('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://127.0.0.1:8554/test','recording':'rtsp'},expected=201)['id']
+request('/api/ftp-accounts',expected=404)
+subprocess.run(['sudo','systemctl','stop','sunhill-go2rtc.service'],check=True,timeout=60)
 deadline=time.monotonic()+90
 while time.monotonic()<deadline:
-    try:
-        ftp=ftplib.FTP();ftp.connect('127.0.0.1',21,timeout=5);ftp.login('camera','ciFtp6')
-        if subprocess.run(['systemctl','is-active','--quiet','sunhill-go2rtc.service'],timeout=5).returncode==0:break
-    except ftplib.all_errors:pass
-    if ftp:ftp.close();ftp=None
+    if subprocess.run(['systemctl','is-active','--quiet','sunhill-go2rtc.service'],timeout=5).returncode==0:break
     time.sleep(3)
-if ftp is None:raise RuntimeError('controller did not recover FTP and go2rtc without configuration changes')
-# Force the parser path while the daemon-owned RuntimeDirectory is absent.
-# This is a separate regression from the unchanged-configuration restart above.
-ftp.quit();ftp=None
-subprocess.run(['sudo','systemctl','stop','sunhill-controller.timer','sunhill-controller.service','sunhill-ftp.service'],check=True,timeout=60)
-if Path('/run/sunhill-ftp').exists():raise RuntimeError('cold FTP validation fixture unexpectedly has runtime directory')
-request('/api/ftp-accounts','POST',{'username':'cold-validation','password':'ci-cold-validation-123','camera_id':None},expected=201)
-subprocess.run(['sudo','systemctl','start','sunhill-controller.service'],check=True,timeout=60)
-with ftplib.FTP() as cold:
-    cold.connect('127.0.0.1',21,timeout=10);cold.login('cold-validation','ci-cold-validation-123')
-subprocess.run(['sudo','systemctl','start','sunhill-controller.timer'],check=True,timeout=60)
-ftp=ftplib.FTP();ftp.connect('127.0.0.1',21,timeout=10);ftp.login('camera','ciFtp6')
+else:raise RuntimeError('controller did not recover go2rtc')
+def fixture_copy(source,parts,filename):
+    directory=Path('/mnt/sunhill-ci/kamery').joinpath(*parts)
+    subprocess.run(['sudo','-u','sunhill','mkdir','-p',str(directory)],check=True,timeout=10)
+    subprocess.run(['sudo','install','-o','sunhill','-g','sunhill','-m','0640',str(source),str(directory/filename)],check=True,timeout=10)
 player=request('/live/player/1/video-stream.js')
 dependency=request('/live/player/1/video-rtc.js')
 if b'video-rtc.js' not in player or b'VideoRTC' not in dependency:
     raise RuntimeError('live player modules are unavailable through the retry paths')
-for name in ('ftp.passwd','ftp.group'):
-    auth_file='/opt/sunhill-nvr/control/current/'+name
-    subprocess.run(['sudo','-u','sunhill','test','-r',auth_file],check=True,timeout=10)
-    if subprocess.run(['sudo','-u','sunhill','test','-w',auth_file],timeout=10).returncode==0:
-        raise RuntimeError('FTP authentication file is writable by the service account')
 websocket=socket.create_connection(('127.0.0.1',8080),timeout=10)
 try:
     key=base64.b64encode(os.urandom(16)).decode()
@@ -143,50 +104,18 @@ with tempfile.TemporaryDirectory() as name:
                         '-f','lavfi','-i','sine=frequency=440:duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',str(file)],check=True)
     stamp=datetime.now(ZoneInfo('Europe/Warsaw')).replace(hour=12,minute=0,second=0,microsecond=0)
     parts=['brama',stamp.strftime('%Y'),stamp.strftime('%m'),stamp.strftime('%d')]
-    for part in parts:
-        try:ftp.mkd(part)
-        except ftplib.error_perm:pass
-        ftp.cwd(part)
-    for offset,file in enumerate(files):
-        with file.open('rb') as source:ftp.storbinary('STOR '+(stamp+timedelta(seconds=offset*2)).strftime('%H%M%S')+'.mp4',source)
-    first_name=stamp.strftime('%H%M%S')+'.mp4'
-    try:ftp.delete(first_name)
-    except ftplib.error_perm:pass
-    else:raise RuntimeError('FTP account was allowed to delete an existing recording')
-    try:
-        with files[0].open('rb') as source:ftp.storbinary('STOR '+first_name,source)
-    except ftplib.error_perm:pass
-    else:raise RuntimeError('FTP account was allowed to overwrite an existing recording')
-    ftp.quit();expected=files[0].read_bytes()
-    dedicated=request('/api/cameras','POST',{'slug':'parking','name':'Parking','main_url':'rtsp://127.0.0.1:8554/parking','recording':'ftp'},expected=201)['id']
-    request('/api/ftp-accounts','POST',{'username':'parkingcam','password':'ci-parking-password-123','camera_id':dedicated},expected=201)
-    private=None;deadline=time.monotonic()+90
-    while time.monotonic()<deadline:
-        try:
-            private=ftplib.FTP();private.connect('127.0.0.1',21,timeout=5);private.login('parkingcam','ci-parking-password-123');break
-        except ftplib.all_errors:
-            if private:private.close()
-            private=None;time.sleep(3)
-    if private is None:raise RuntimeError('dedicated FTP home was not provisioned')
-    try:
-        if private.pwd()!='/':raise RuntimeError('dedicated FTP account is not jailed')
-        try:private.cwd('/brama')
-        except ftplib.error_perm:pass
-        else:raise RuntimeError('dedicated FTP account escaped to another camera')
-        private.storbinary('STOR ci-private.txt',io.BytesIO(b'private-camera'))
-    finally:private.quit()
-    private_path='/mnt/sunhill-ci/kamery/parking/ci-private.txt'
-    if subprocess.check_output(['sudo','cat',private_path],timeout=10)!=b'private-camera':raise RuntimeError('FTP upload did not land in dedicated home')
-    subprocess.run(['sudo','rm','--',private_path],check=True,timeout=10)
+    for offset,file in enumerate(files):fixture_copy(file,parts,(stamp+timedelta(seconds=offset*2)).strftime('%H%M%S')+'.mp4')
+    expected=files[0].read_bytes()
+    dedicated=request('/api/cameras','POST',{'slug':'parking','name':'Parking','main_url':'rtsp://127.0.0.1:8554/parking','recording':'rtsp'},expected=201)['id']
     deadline=time.monotonic()+150;recordings=[]
     while time.monotonic()<deadline:
         result=request('/api/cameras/'+str(camera)+'/recordings?date='+quote(stamp.date().isoformat()))
         recordings=result['recordings']
         if len(recordings)>=2:break
         time.sleep(5)
-    if len(recordings)<2:raise RuntimeError('both FTP recordings were not indexed')
+    if len(recordings)<2:raise RuntimeError('both fixture recordings were not indexed')
     actual=request('/api/recordings/'+str(recordings[0]['id'])+'/file')
-    if actual!=expected:raise RuntimeError('downloaded FTP recording differs from upload')
+    if actual!=expected:raise RuntimeError('downloaded fixture recording differs from upload')
     start=stamp.astimezone(timezone.utc);end=start+timedelta(seconds=4)
     payload={'start':start.isoformat(),'end':end.isoformat(),'gaps':'black'}
     preview=request('/api/cameras/'+str(camera)+'/export-preview','POST',payload)
@@ -380,37 +309,14 @@ with tempfile.TemporaryDirectory() as temporary:
     if before['users']!=after['users'] or before['accounts']!=after['accounts']:raise RuntimeError('rollback did not restore account configuration')
     if request('/api/recordings/'+str(recorded['id'])+'/file')!=before_media:raise RuntimeError('rollback changed recording content')
 
-# Test all seven camera directory layouts with real FTP sessions. This uses
-# synthetic recordings, not the customer's physical devices or passwords.
-# Run after the earlier rotation assertions so these new files cannot alter
-# the expected deletion count.
+# Seven archive layouts, using synthetic fixture files (real RTSP migration is tested separately).
 slugs=('brama','brama2','drzwi','parking','podworko','podworko2','skoda')
 existing={item['slug']:item['id'] for item in request('/api/cameras')['cameras']}
-account_ids={};camera_ids={}
+camera_ids={}
 for slug in slugs:
     cid=existing.get(slug)
-    if cid is None:
-        cid=request('/api/cameras','POST',{'slug':slug,'name':slug,'main_url':f'rtsp://127.0.0.1:8554/{slug}','recording':'ftp'},expected=201)['id']
+    if cid is None:cid=request('/api/cameras','POST',{'slug':slug,'name':slug,'main_url':f'rtsp://127.0.0.1:8554/{slug}','recording':'rtsp'},expected=201)['id']
     camera_ids[slug]=cid
-    account_ids[slug]=request('/api/ftp-accounts','POST',{'username':'ci-'+slug,'password':'ci-camera-matrix-password','camera_id':cid},expected=201)['id']
-
-def login_ftp(username,password,*,timeout=90):
-    deadline=time.monotonic()+timeout
-    while time.monotonic()<deadline:
-        client=ftplib.FTP()
-        try:
-            client.connect('127.0.0.1',21,timeout=5);client.login(username,password);return client
-        except ftplib.all_errors:
-            client.close();time.sleep(2)
-    raise RuntimeError('FTP matrix account was not activated: '+username)
-
-def ftp_upload(client,parts,filename,content):
-    client.cwd('/')
-    for part in parts:
-        try:client.mkd(part)
-        except ftplib.error_perm:pass
-        client.cwd(part)
-    client.storbinary('STOR '+filename,io.BytesIO(content))
 
 with tempfile.TemporaryDirectory() as matrix_tmp:
     fixture=Path(matrix_tmp)/'fixture.mp4'
@@ -418,24 +324,8 @@ with tempfile.TemporaryDirectory() as matrix_tmp:
                     '-f','lavfi','-i','sine=frequency=440:duration=1','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',str(fixture)],check=True,timeout=30)
     content=fixture.read_bytes();matrix_stamp=datetime.now(ZoneInfo('Europe/Warsaw')).replace(hour=13,minute=15,second=0,microsecond=0)
     dated=matrix_stamp.strftime('%Y/%m/%d').split('/')
-    shared=login_ftp('camera','ciFtp6')
-    try:
-        for slug in slugs:ftp_upload(shared,[slug,*dated],'131500.mp4',content)
-    finally:shared.quit()
     for slug in slugs:
-        private=login_ftp('ci-'+slug,'ci-camera-matrix-password')
-        try:
-            if private.pwd()!='/':raise RuntimeError('private account has no chroot')
-            private.cwd('..')
-            if private.pwd()!='/':raise RuntimeError('private account traversed above chroot')
-            # A sibling camera directory exists in the shared root, but must
-            # not be reachable via a private account's absolute path.
-            sibling=next(other for other in slugs if other!=slug)
-            try:private.cwd('/'+sibling)
-            except ftplib.error_perm:pass
-            else:raise RuntimeError('private account accessed another camera')
-            ftp_upload(private,dated,'131502.mp4',content)
-        finally:private.quit()
+        for filename in ('131500.mp4','131502.mp4'):fixture_copy(fixture,[slug,*dated],filename)
     # Confirm the archived objects through the authenticated API, including
     # exact bytes. No filename-only or directory-only success criterion.
     deadline=time.monotonic()+180;remaining=set(slugs)
@@ -446,34 +336,11 @@ with tempfile.TemporaryDirectory() as matrix_tmp:
             selected=[item for item in records if item['local_time'] in expected_times]
             if len(selected)!=2:continue
             for item in selected:
-                if request(f'/api/recordings/{item["id"]}/file')!=content:raise RuntimeError('FTP camera upload content mismatch: '+slug)
+                if request(f'/api/recordings/{item["id"]}/file')!=content:raise RuntimeError('fixture camera content mismatch: '+slug)
             remaining.remove(slug)
         if remaining:time.sleep(3)
-    if remaining:raise RuntimeError('FTP camera index incomplete: '+','.join(sorted(remaining)))
-    # Disabling an account must invalidate existing connections as well as new
-    # logins after the controller restarts the daemon with the new credentials.
-    revoked=login_ftp('ci-skoda','ci-camera-matrix-password')
-    try:
-        request(f'/api/ftp-accounts/{account_ids["skoda"]}','PATCH',{'enabled':False})
-        deadline=time.monotonic()+90
-        while time.monotonic()<deadline:
-            trial=ftplib.FTP()
-            try:
-                trial.connect('127.0.0.1',21,timeout=5);trial.login('ci-skoda','ci-camera-matrix-password')
-            except ftplib.error_perm as exc:
-                if str(exc).startswith('530'):break
-                raise
-            except (OSError,EOFError):pass
-            finally:trial.close()
-            time.sleep(2)
-        else:raise RuntimeError('disabled FTP account still authenticates')
-        try:revoked.voidcmd('NOOP')
-        except ftplib.all_errors:pass
-        else:raise RuntimeError('disabled FTP account retained an active session')
-    finally:revoked.close()
-    request(f'/api/ftp-accounts/{account_ids["skoda"]}','PATCH',{'enabled':True})
-    restored=login_ftp('ci-skoda','ci-camera-matrix-password');restored.quit()
-print('Seven synthetic FTP camera paths and account isolation: OK',flush=True)
+    if remaining:raise RuntimeError('camera index incomplete: '+','.join(sorted(remaining)))
+print('Seven synthetic archive paths: OK',flush=True)
 
 # A private LAN CA is explicitly generated from the console; no client skips
 # certificate validation. Include both names for the subsequent domain change.
@@ -559,4 +426,4 @@ try:
     if response.status!=200 or response.getheader('Location') is not None:
         raise RuntimeError('Direct IPv4 access lost after domain change')
 finally:connection.close()
-print('Ubuntu installation, FTP, archive, export, approved update, LAN HTTPS and domain change smoke test passed')
+print('Ubuntu installation, RTSP-only, archive, export, approved update, LAN HTTPS and domain change smoke test passed')

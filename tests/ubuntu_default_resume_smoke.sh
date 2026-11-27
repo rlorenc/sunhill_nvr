@@ -42,7 +42,12 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.execute('INSERT INTO system_settings(key,value) VALUES(?,?)',('ci_resume_sentinel','preserve-existing-database'))
 PY
     sudo sha256sum "$root/config/config.json" "$root/media/kamery/.sunhill-volume-id" > "$logs/before.sha256"
-    if ! sudo bash install.sh --resume > "$logs/install.log" 2>&1; then show_log "$logs/install.log"; exit 1; fi
+    git clone "$package/sunhill-nvr-history.bundle" "$logs/legacy-src"
+    git -C "$logs/legacy-src" checkout -B main c938e02de9eaa38017bad32d124bbc42015e71e8
+    (cd "$logs/legacy-src" && python3 scripts/package_release.py --candidate "$logs/sunhill-nvr-1.1.3.tar.gz")
+    tar -xzf "$logs/sunhill-nvr-1.1.3.tar.gz" -C "$logs"
+    if ! (cd "$logs/sunhill-nvr-1.1.3" && sudo bash install.sh --resume) > "$logs/resume.log" 2>&1; then show_log "$logs/resume.log"; exit 1; fi
+    if ! sudo bash install.sh --update --rtsp-only > "$logs/install.log" 2>&1; then show_log "$logs/install.log"; exit 1; fi
     sudo sha256sum --check "$logs/before.sha256"
     sudo -u sunhill /usr/bin/python3 - "$root/data/sunhill.sqlite" <<'PY'
 import sqlite3,sys
@@ -61,13 +66,6 @@ fi
 [[ $(sudo stat -c %a "$root") == 755 ]]
 sudo -u sunhill test -w "$root/media/kamery"
 sudo -u sunhill test -r "$root/data/sunhill.sqlite"
-if [[ $mode == resume ]]; then
-    sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
-    pid=$(systemctl show -p MainPID --value sunhill-ftp.service)
-    [[ $pid =~ ^[1-9][0-9]*$ ]]
-    [[ $(sudo cat "/proc/$pid/attr/apparmor/current") == 'proftpd (enforce)' ]]
-    sudo env PYTHONPATH="$root/current/app" /usr/bin/python3 -m sunhill_nvr.install_health "$host"
-else
     ! systemctl is-active --quiet sunhill-ftp.service
     [[ ! -e /etc/systemd/system/sunhill-ftp.service && ! -e /etc/systemd/system/sunhill-ftp-policy.service ]]
     sudo env PYTHONPATH="$root/current/app" /usr/bin/python3 -m sunhill_nvr.install_health "$host" --rtsp-only
@@ -77,7 +75,6 @@ with sqlite3.connect(sys.argv[1]) as db:
     assert db.execute("SELECT value FROM system_settings WHERE key='recording_transport'").fetchone()==('rtsp-only',)
     assert db.execute('SELECT COUNT(*) FROM ftp_accounts').fetchone()==(0,)
 PYRTSP
-fi
 # Check the port 80 vhost even when the Ubuntu welcome site is enabled.
 /usr/bin/python3 - "$host" <<'PYCODE'
 import sys
@@ -93,17 +90,6 @@ for host,status in [('127.0.0.1',200),(canonical,301)]:
         response.read()
     finally:conn.close()
 PYCODE
-if [[ $mode == resume ]]; then
-/usr/bin/python3 - <<'PY'
-import ftplib
-with ftplib.FTP() as ftp:
-    if not ftp.connect('127.0.0.1',21,timeout=5).startswith('220'):
-        raise SystemExit('Real FTP greeting missing')
-    try:ftp.login('nonexistent-ci-account','not-a-valid-password')
-    except ftplib.error_perm:pass
-    else:raise SystemExit('Unknown FTP account accepted')
-PY
-fi
 if [[ $mode == clean ]]; then
     # Prove setup works from the same installed LAN origin a user can open.
     # Do not print the token, password, session cookie, or response body.

@@ -87,7 +87,7 @@ class RecoveryMigrationTests(unittest.TestCase):
              'activity_socket':'/run/sunhill-activity/activity.sock','control_state':str(self.state),
              'timezone':'Europe/Warsaw','minimum_free':10_000_000_000,'free_buffer':5_000_000_000}
         self.adapter.config_file.write_text(json.dumps(raw))
-        rendered=render(parse(raw))
+        rendered=render(parse(raw),rtsp_only=True)
         for name,content in rendered.items():(self.units/name).write_text(content)
         (self.state/'managed-units.json').write_text(json.dumps(sorted(rendered)))
         self.package.unlink();self.signature.unlink()

@@ -55,7 +55,7 @@ class WebTests(unittest.TestCase):
     cfg={'enabled':True,'retention_days':7,'rules':[]}
     self.assertEqual(self.call(settings,'PATCH',cfg,cookie)[0]['status'],'403 Forbidden');self.assertEqual(self.call(settings,'PATCH',cfg,viewer,vcsrf)[0]['status'],'403 Forbidden');self.assertEqual(self.call(settings,'PATCH',cfg,cookie,csrf)[0]['status'],'200 OK')
     db=database.open_db(self.file);analytics.snapshot(db,cid,'rtsp://192.168.1.40/main',now,[{'id':'1','kind':'person','box':[.2,.3,.1,.1]}],'session',analytics.RuleEngine(),received=now);db.close()
-    self.assertEqual(json.loads(self.call('/api/metadata/live',cookie=viewer)[1]),{'cameras':{}});self.assertEqual(self.call(history,cookie=viewer,extra={'QUERY_STRING':f'at_ms={now}'})[0]['status'],'403 Forbidden')
+    self.assertEqual(json.loads(self.call('/api/metadata/live',cookie=viewer)[1]),{'cameras':{},'motion':{}});self.assertEqual(self.call(history,cookie=viewer,extra={'QUERY_STRING':f'at_ms={now}'})[0]['status'],'403 Forbidden')
     db=database.open_db(self.file);db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES(?,?,0)',(uid,cid));db.commit();db.close()
     self.assertIn(str(cid),json.loads(self.call('/api/metadata/live',cookie=viewer)[1])['cameras']);self.assertEqual(len(json.loads(self.call(history,cookie=viewer,extra={'QUERY_STRING':f'at_ms={now}'})[1])['frames']),1)
     self.assertEqual(self.call(settings,'PATCH',{'enabled':True,'retention_days':0,'rules':[]},cookie,csrf)[0]['status'],'400 Bad Request')
@@ -198,7 +198,7 @@ class WebTests(unittest.TestCase):
     self.assertEqual(r['status'],'201 Created');cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/controls'
     db=database.open_db(self.file);uid=security.create_user(db,'viewer','password-for-viewer','viewer');db.execute('INSERT INTO camera_permissions(user_id,camera_id,may_download) VALUES (?,?,0)',(uid,cid));db.commit();db.close()
     r,b=self.call('/api/login','POST',{'username':'viewer','password':'password-for-viewer'},extra={'REMOTE_ADDR':'192.0.2.9'});viewer=next(v for k,v in r['headers'] if k=='Set-Cookie' and v.startswith('sunhill_session=')).split(';')[0];vcsrf=json.loads(b)['csrf']
-    with patch('sunhill_nvr.camera_control.Reolink') as device,patch('sunhill_nvr.camera_control.capabilities',return_value={'controls':{'light':False},'partial':False,'device':{'model':'Lumus'}}),patch('sunhill_nvr.camera_control.apply') as apply:
+    with patch('sunhill_nvr.device_diagnosis.probe_talkback',return_value=False),patch('sunhill_nvr.camera_control.Reolink') as device,patch('sunhill_nvr.camera_control.capabilities',return_value={'controls':{'light':False},'partial':False,'device':{'model':'Lumus'}}),patch('sunhill_nvr.camera_control.apply') as apply:
         for method,body in [('GET',None),('POST',{'control':'light','value':True})]:self.assertEqual(self.call(url,method,body,viewer,vcsrf)[0]['status'],'403 Forbidden')
         self.assertEqual(self.call(url,'POST',{'control':'light','value':True},cookie)[0]['status'],'403 Forbidden');device.assert_not_called()
         self.assertEqual(self.call(url,'POST',{'control':'Reboot','value':1},cookie,csrf)[0]['status'],'400 Bad Request');device.assert_not_called()
@@ -208,7 +208,7 @@ class WebTests(unittest.TestCase):
  def test_extended_camera_settings_permission_and_whitelist(self):
     from unittest.mock import patch
     cookie,csrf=self.login();r,b=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://u:secret@192.168.1.30/main'},cookie,csrf);cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/settings'
-    with patch('sunhill_nvr.camera_control.Reolink') as device,patch('sunhill_nvr.camera_control.capabilities',return_value={'controls':{},'partial':False,'device':{'model':'Lumus'}}),patch('sunhill_nvr.camera_settings.read',return_value=([{'key':'mirror','value':False}],False)),patch('sunhill_nvr.camera_settings.apply') as apply:
+    with patch('sunhill_nvr.device_diagnosis.probe_talkback',return_value=False),patch('sunhill_nvr.camera_control.Reolink') as device,patch('sunhill_nvr.camera_control.capabilities',return_value={'controls':{},'partial':False,'device':{'model':'Lumus'}}),patch('sunhill_nvr.camera_settings.read',return_value=([{'key':'mirror','value':False}],False)),patch('sunhill_nvr.camera_settings.apply') as apply:
         self.assertEqual(self.call(url,'POST',{'control':'mirror','value':True},cookie)[0]['status'],'403 Forbidden');device.assert_not_called()
         self.assertEqual(self.call(url,'POST',{'control':'SetNetPort','value':True},cookie,csrf)[0]['status'],'400 Bad Request');device.assert_not_called()
         r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');self.assertEqual(json.loads(b)['settings'],[{'key':'mirror','value':False}]);self.assertNotIn(b'secret',b)
@@ -217,12 +217,12 @@ class WebTests(unittest.TestCase):
     from unittest.mock import patch
     from sunhill_nvr.camera_control import ControlError
     cookie,csrf=self.login();r,b=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://u:secret@192.168.1.30/main'},cookie,csrf);cid=json.loads(b)['id'];url=f'/api/cameras/{cid}/controls'
-    with patch('sunhill_nvr.camera_control.Reolink',side_effect=ControlError('API unavailable')),patch('sunhill_nvr.camera_control.identify_onvif',return_value={'model':'Lumus','manufacturer':'Reolink','identity_source':'ONVIF'}):
+    with patch('sunhill_nvr.device_diagnosis.probe_talkback',return_value=False),patch('sunhill_nvr.camera_control.Reolink',side_effect=ControlError('API unavailable')),patch('sunhill_nvr.camera_control.identify_onvif',return_value={'model':'Lumus','manufacturer':'Reolink','identity_source':'ONVIF'}):
         r,b=self.call(url,cookie=cookie);self.assertEqual(r['status'],'200 OK');result=json.loads(b);self.assertEqual(result['device']['model'],'Lumus');self.assertEqual(result['controls'],{});self.assertTrue(result['partial']);self.assertNotIn(b'secret',b)
         r,b=self.call(url,'POST',{'control':'light','value':True},cookie,csrf);self.assertEqual(r['status'],'422 Unprocessable Entity')
  def test_admin_password_boundaries_on_create_and_reset(self):
     cookie,csrf=self.login()
-    for endpoint,username,maximum in (('/api/users','viewer',1024),('/api/ftp-accounts','camera',128)):
+    for endpoint,username,maximum in (('/api/users','viewer',1024),):
         payload={'username':username,'password':'12345'}
         r,b=self.call(endpoint,'POST',payload,cookie,csrf)
         self.assertEqual(r['status'],'400 Bad Request');self.assertIn(f'6 do {maximum}',b.decode())
@@ -307,7 +307,7 @@ class WebTests(unittest.TestCase):
     from unittest.mock import patch
     cookie,csrf=self.login()
     real=self.app.json_body
-    for path,data in [('/api/cameras',{'slug':'cam','name':'Cam','main_url':'rtsp://x/test'}),('/api/ftp-accounts',{'username':'camera','password':'camera-password-123'})]:
+    for path,data in [('/api/cameras',{'slug':'cam','name':'Cam','main_url':'rtsp://x/test'})]:
         with self.subTest(path=path):
             def revoke(environ,**kwargs):
                 value=real(environ,**kwargs)
@@ -486,7 +486,7 @@ class WebTests(unittest.TestCase):
     self.assertEqual(db.execute('SELECT state,origin FROM pending_notifications').fetchall(),[('clock_skew','')])
     self.assertIsNotNone(db.execute("SELECT value FROM system_settings WHERE key='ha_generation'").fetchone());db.close()
  def test_disabling_camera_clears_its_audio_warning_and_queued_alerts(self):
-    cookie,csrf=self.login();_,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x','recording':'ftp'},cookie,csrf);cid=json.loads(body)['id']
+    cookie,csrf=self.login();_,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Cam','main_url':'rtsp://x','recording':'rtsp'},cookie,csrf);cid=json.loads(body)['id']
     db=database.open_db(self.file)
     with db:
         db.execute("INSERT INTO system_health VALUES('recorder_audio:cam','recording_audio_missing',1)")
@@ -550,30 +550,6 @@ class WebTests(unittest.TestCase):
     db=database.open_db(self.file)
     try:self.assertEqual(db.execute('SELECT role FROM users WHERE id=?',(uid,)).fetchone()[0],'viewer')
     finally:db.close()
- def test_ftp_account_scope_can_be_changed_and_rejects_incompatible_assignments(self):
-    from sunhill_nvr import config_reconcile
-    cookie,csrf=self.login()
-    _,a=self.call('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://x/test'},cookie,csrf);one=json.loads(a)['id']
-    _,b=self.call('/api/cameras','POST',{'slug':'dom','name':'Dom','main_url':'rtsp://x/test'},cookie,csrf);two=json.loads(b)['id']
-    _,body=self.call('/api/ftp-accounts','POST',{'username':'camera','password':'camera-password-123','camera_id':None},cookie,csrf);fid=json.loads(body)['id']
-    self.assertEqual(self.call(f'/api/cameras/{two}/ftp-accounts','POST',{'accounts':[fid]},cookie,csrf)[0]['status'],'200 OK')
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':one},cookie,csrf)[0]['status'],'409 Conflict')
-    self.assertEqual(self.call(f'/api/cameras/{two}/ftp-accounts','POST',{'accounts':[]},cookie,csrf)[0]['status'],'200 OK')
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':one},cookie,csrf)[0]['status'],'200 OK')
-    db=database.open_db(self.file);config=config_reconcile.desired(db,self.root,1200,1200);db.close()
-    self.assertIn(str(self.root/'brama'),config['ftp.passwd'])
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':999},cookie,csrf)[0]['status'],'400 Bad Request')
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':None},cookie,csrf)[0]['status'],'200 OK')
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':True},cookie,csrf)[0]['status'],'400 Bad Request')
- def test_camera_delete_preserves_dedicated_ftp_accounts(self):
-    cookie,csrf=self.login()
-    _,body=self.call('/api/cameras','POST',{'slug':'cam','name':'Camera','main_url':'rtsp://x/test'},cookie,csrf);cid=json.loads(body)['id']
-    _,body=self.call('/api/ftp-accounts','POST',{'username':'camera','password':'camera-password-123','camera_id':cid},cookie,csrf);fid=json.loads(body)['id']
-    self.assertEqual(self.call(f'/api/cameras/{cid}','DELETE',cookie=cookie,csrf=csrf)[0]['status'],'409 Conflict')
-    accounts=json.loads(self.call('/api/ftp-accounts',cookie=cookie)[1])['accounts'];self.assertEqual(accounts[0]['id'],fid)
-    self.assertEqual(self.call(f'/api/ftp-accounts/{fid}','PATCH',{'camera_id':None},cookie,csrf)[0]['status'],'200 OK')
-    self.assertEqual(self.call(f'/api/cameras/{cid}','DELETE',cookie=cookie,csrf=csrf)[0]['status'],'200 OK')
-    self.assertEqual(len(json.loads(self.call('/api/ftp-accounts',cookie=cookie)[1])['accounts']),1)
  def test_deleted_camera_identity_is_never_reused_for_old_export(self):
     cookie,csrf=self.login()
     _,body=self.call('/api/cameras','POST',{'slug':'old','name':'Stara','main_url':'rtsp://x'},cookie,csrf);old=json.loads(body)['id']
@@ -832,14 +808,6 @@ class WebTests(unittest.TestCase):
     r,_=self.call(f'/api/cameras/{cid}','PATCH',{'username':'new','password':'secret!'},cookie,csrf);self.assertEqual(r['status'],'200 OK')
     db=sqlite3.connect(self.file);main=db.execute('SELECT main_url FROM camera_details WHERE camera_id=?',(cid,)).fetchone()[0];db.close()
     self.assertEqual(main,'rtsp://new:secret%21@camera/main')
- def test_ftp_shared_and_camera_specific_accounts(self):
-    cookie,csrf=self.login()
-    r,body=self.call('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://x/test'},cookie,csrf);cid=json.loads(body)['id']
-    r,body=self.call('/api/ftp-accounts','POST',{'username':'cameras','password':'camera-password-123','camera_id':None},cookie,csrf)
-    self.assertEqual(r['status'],'201 Created');fid=json.loads(body)['id']
-    r,_=self.call(f'/api/cameras/{cid}/ftp-accounts','POST',{'accounts':[fid]},cookie,csrf);self.assertEqual(r['status'],'200 OK')
-    r,_=self.call(f'/api/ftp-accounts/{fid}','DELETE',None,cookie,csrf);self.assertEqual(r['status'],'409 Conflict')
-    r,body=self.call('/api/ftp-accounts',cookie=cookie);self.assertNotIn(b'camera-password',body)
  def test_camera_statistics_admin_only(self):
     cookie,csrf=self.login()
     r,body=self.call('/api/cameras','POST',{'slug':'testcam','name':'Test','main_url':'rtsp://u:secret@x/test'},cookie,csrf);self.assertEqual(r['status'],'201 Created');cid=json.loads(body)['id']
@@ -850,11 +818,10 @@ class WebTests(unittest.TestCase):
     self.assertEqual(self.call('/api/admin/camera-statistics',cookie=viewer)[0]['status'],'403 Forbidden')
  def test_rtsp_only_retired_ftp_api_and_camera_modes(self):
     cookie,csrf=self.login();payload={'slug':'legacy','name':'Legacy','main_url':'rtsp://host/live','recording':'ftp'}
-    r,b=self.call('/api/cameras','POST',payload,cookie,csrf);self.assertEqual(r['status'],'201 Created');cid=json.loads(b)['id']
-    db=database.open_db(self.file);database.retire_ftp(db,now=100);db.close()
-    self.assertEqual(self.call('/api/ftp-accounts',cookie=cookie)[0]['status'],'410 Gone')
-    self.assertEqual(self.call('/api/ftp-accounts','POST',{'username':'legacy','password':'long-password'},cookie,csrf)[0]['status'],'410 Gone')
-    self.assertEqual(self.call(f'/api/cameras/{cid}/ftp-accounts',cookie=cookie)[0]['status'],'410 Gone')
+    r,b=self.call('/api/cameras','POST',dict(payload,recording='rtsp'),cookie,csrf);self.assertEqual(r['status'],'201 Created');cid=json.loads(b)['id']
+    self.assertEqual(self.call('/api/ftp-accounts',cookie=cookie)[0]['status'],'404 Not Found')
+    self.assertEqual(self.call('/api/ftp-accounts','POST',{'username':'legacy','password':'long-password'},cookie,csrf)[0]['status'],'404 Not Found')
+    self.assertEqual(self.call(f'/api/cameras/{cid}/ftp-accounts',cookie=cookie)[0]['status'],'404 Not Found')
     self.assertEqual(self.call(f'/api/cameras/{cid}','PATCH',{'recording':'ftp'},cookie,csrf)[0]['status'],'400 Bad Request')
     self.assertEqual(self.call('/api/cameras','POST',dict(payload,slug='second'),cookie,csrf)[0]['status'],'400 Bad Request')
     inventory=json.loads(self.call('/api/admin/inventory',cookie=cookie)[1]);self.assertTrue(inventory['rtsp_only']);self.assertEqual(inventory['accounts'],[]);self.assertEqual(inventory['cameras'][0]['recording'],'rtsp')
@@ -864,19 +831,17 @@ class WebTests(unittest.TestCase):
     def call(url,method='GET',data=None,status='200 OK'):
         r,body=self.call(url,method,data,cookie,csrf);self.assertEqual(r['status'],status,body);return json.loads(body)
     cid=call('/api/cameras','POST',{'slug':'brama','name':'Brama','main_url':'rtsp://camera-user:camera-secret@x/test'},'201 Created')['id']
-    fid=call('/api/ftp-accounts','POST',{'username':'camera','password':'ftp-secret-password','camera_id':cid},'201 Created')['id']
     uid=call('/api/users','POST',{'username':'viewer','password':'viewer-secret-password','role':'viewer'},'201 Created')['id']
     call(f'/api/users/{uid}/permissions','POST',{'cameras':[{'id':cid,'download':True}]})
-    call(f'/api/cameras/{cid}/ftp-accounts','POST',{'accounts':[fid]})
     call(f'/api/cameras/{cid}/onvif','PATCH',{'url':'http://192.0.2.10/onvif/device_service','username':'onvif','password':'onvif-secret','auth_mode':'digest'})
     call(f'/api/cameras/{cid}','PATCH',{'enabled':False})
     inventory=call('/api/admin/inventory')
-    self.assertEqual(inventory['accounts'],call('/api/ftp-accounts')['accounts'])
+    self.assertEqual(inventory['accounts'],[])
     self.assertEqual([{k:v for k,v in u.items() if k!='permissions'} for u in inventory['users']],call('/api/users')['users'])
     viewer=next(u for u in inventory['users'] if u['id']==uid)
     self.assertEqual(viewer['permissions'],call(f'/api/users/{uid}/permissions')['cameras'])
     camera=inventory['cameras'][0];self.assertEqual(camera['id'],cid);self.assertFalse(camera['enabled'])
-    self.assertEqual(camera['accounts'],call(f'/api/cameras/{cid}/ftp-accounts')['accounts'])
+    self.assertEqual(camera['accounts'],[])
     self.assertEqual(camera['onvif'],call(f'/api/cameras/{cid}/onvif'))
     self.assertEqual(camera['recording'],call(f'/api/cameras/{cid}')['recording'])
     for secret in ('camera-secret','ftp-secret-password','viewer-secret-password','onvif-secret','password_hash','main_url'):

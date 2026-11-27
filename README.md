@@ -104,8 +104,8 @@ Polecenie interaktywnie poprosi o nazwę administratora, hasło i potwierdzenie 
 
 ### Konfiguracja kamer i nagrywania
 
-1. W **Administracja / Kamery** dodaj kamerę, podając adres IP i dane logowania. Wybierz RTSP, FTP lub podgląd bez nagrywania. W razie potrzeby skonfiguruj adresy RTSP ręcznie.
-2. W **Administracja / Nagrywanie** ustaw katalogi, długość segmentu RTSP i limity wolnej przestrzeni. Dla FTP skonfiguruj również wysyłkę nagrań w kamerze.
+1. W **Administracja / Kamery** dodaj kamerę, podając adres IP i dane logowania. Wybierz RTSP lub podgląd bez nagrywania. W razie potrzeby skonfiguruj adresy RTSP ręcznie.
+2. W **Administracja / Nagrywanie** ustaw katalogi, długość segmentu RTSP i limity wolnej przestrzeni.
 3. W **Administracja / Użytkownicy** skonfiguruj konta i dostęp do kamer.
 4. W **Na żywo** wybierz jakość i układ podglądu; szybki włącznik LED znajduje się w menu kamery, jeżeli jest dostępny. Pozostałe ustawienia sprzętowe: **Administracja / Kamery / wybrana kamera / Ustawienia sprzętowe kamery**.
 
@@ -181,3 +181,9 @@ Szczegóły przygotowania wydań i zasady pracy: [AGENTS.md](AGENTS.md) oraz [HA
 ### Ręczne przywracanie wersji (1.1.3+)
 
 Zachowane punkty przywracania są dostępne w Administracja / Aktualizacja aplikacji oraz przez `bash install.sh --rollback-history`, `bash install.sh --rollback` i `bash install.sh --downgrade WERSJA`. Pierwsze wdrożenie z rozpakowanego 1.1.3 wymaga aktualizacji przypiętego recovery (automatyczna ścieżka repair lub jawne `--update --repair`; `--update --rtsp-only` przy migracji FTP). Uwaga: przywracana jest historyczna baza, a nie migracja danych wstecz. [Instrukcja](docs/rollback-1.1.3.md).
+
+### 1.1.4: diagnoza urządzeń i RTSP-only
+
+Menu konta otwiera się kliknięciem nazwy użytkownika. Zawiera ustawienia i wylogowanie; zdarzenia pozostają na osi archiwum. Panel sprzętowy pokazuje potwierdzone funkcje; „Ponów diagnozę kamery” wymusza aktualny odczyt. Wynik zapisuje się w SQLite (24 h, wynik częściowy 120 s, zmiana konfiguracji unieważnia). Głos wymaga potwierdzonego kanału G.711; firmware wymaga deklaracji HTTPFirmwareUpgrade. Lokalna detekcja ruchu dodaje prostokąty z różnic kolejnych klatek (2 fps, do 32 kamer, bez rekonstrukcji starego archiwum). Limity i wydajność wymagają pomiarów na docelowym serwerze.
+
+Nowa instalacja jest tylko RTSP. Aktualizacja starszej instalacji z FTP: `bash install.sh --update --rtsp-only`. Nie ma czynnego demona FTP, API kont, konfiguratora ani instalacji ProFTPD. Historyczny schemat SQLite i niskopoziomowy opis starych jednostek pozostają dla migracji i rollbacku. Pakiet systemowy ProFTPD nie jest globalnie odinstalowywany. Przerwaną instalację 0.2.x należy najpierw odzyskać oryginalną paczką 1.1.3 (`--resume`), następnie zaktualizować do 1.1.4.

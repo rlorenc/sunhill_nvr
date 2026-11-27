@@ -1,4 +1,4 @@
-"""Render and atomically activate validated camera and FTP configuration.
+"""Render and atomically activate validated camera configuration.
 
 The caller is a narrowly scoped privileged service. The state directory and its
 parents must be administrator-owned and inaccessible for writing by web workers.
@@ -13,35 +13,8 @@ import stat
 import tempfile
 from pathlib import Path
 from .cameras import Camera,go2rtc_config
-from .ftp_accounts import Account,render,render_group
 
 class ReconcileError(RuntimeError):pass
-
-def desired(db: sqlite3.Connection, archive_root: Path, uid: int, gid: int, *, supplementary_gids=()) -> dict[str,str]:
-    if (not isinstance(supplementary_gids,(tuple,list,set)) or len(supplementary_gids)>32
-        or any(type(value) is not int or not 1000<=value<=2**31-1 or value==65534 for value in supplementary_gids)):
-        raise ValueError('invalid supplementary FTP groups')
-    # Render both daemons from one snapshot. A concurrent camera/account edit
-    # must not mix old camera configuration and new FTP credentials.
-    db.execute('SAVEPOINT reconcile_snapshot')
-    try:
-        rows=db.execute('SELECT cameras.slug,cameras.name,camera_details.main_url,camera_details.sub_url,camera_details.record_mode,cameras.enabled FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id ORDER BY cameras.slug').fetchall()
-        ftp_rows=db.execute('SELECT ftp_accounts.username,ftp_accounts.password_hash,cameras.slug,ftp_accounts.home_camera_id FROM ftp_accounts LEFT JOIN cameras ON cameras.id=ftp_accounts.home_camera_id WHERE ftp_accounts.enabled=1 ORDER BY ftp_accounts.username').fetchall()
-        cameras=[Camera(slug,name,main,sub,mode,bool(enabled)) for slug,name,main,sub,mode,enabled in rows]
-        accounts=[]
-        for username,password_hash,camera,home_id in ftp_rows:
-            # A broken foreign key must never turn a private account into a
-            # shared archive account, including on an older inconsistent DB.
-            if home_id is not None and camera is None:raise ReconcileError('FTP camera directory unavailable')
-            accounts.append(Account(username,password_hash,camera))
-    finally:
-        db.execute('RELEASE reconcile_snapshot')
-    groups=render_group('sunhillftp',gid,accounts)
-    for extra_gid in sorted(set(supplementary_gids)-{gid}):
-        groups+=render_group('sunhill-extra-'+str(extra_gid),extra_gid,accounts)
-    return {'go2rtc.json':go2rtc_config(cameras),
-            'ftp.passwd':render(accounts,archive_root,uid,gid),
-            'ftp.group':groups}
 
 def desired_gateway(db: sqlite3.Connection) -> dict[str,str]:
     """Render the RTSP gateway without querying legacy FTP accounts or storage."""
@@ -80,12 +53,11 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
     """Publish all config files via a single symlink switch and roll back on failure.
 
     validate receives the candidate directory. restart returns True only when all
-    affected services are healthy. Actual ProFTPD/go2rtc validation is the
+    affected services are healthy. Actual gateway validation is the
     responsibility of the privileged service integrating this component.
     """
     if state_dir.is_symlink() or not state_dir.is_dir():raise ReconcileError('invalid state directory')
-    base={'go2rtc.json','ftp.passwd','ftp.group'}
-    if set(contents) not in ({'go2rtc.json'},base,base|{'proftpd.conf'}):raise ReconcileError('invalid configuration set')
+    if set(contents)!={'go2rtc.json'}:raise ReconcileError('invalid configuration set')
     if any(not name or '/' in name or name in ('.','..') for name in required_files):raise ReconcileError('invalid required file')
     current=state_dir/'current'
     pending=state_dir/'.activation-pending';interrupted=_pending(pending)
@@ -105,7 +77,7 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
                 info=(previous/name).lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid():
                     raise ReconcileError('previous configuration contains an unsafe file')
-                expected=0o640 if name=='go2rtc.json' or (name in ('ftp.passwd','ftp.group') and service_gid is not None) else 0o600
+                expected=0o640
                 if stat.S_IMODE(info.st_mode)!=expected:repair.add(name)
             previous_contents={name:(previous/name).read_text(encoding='utf-8') for name in contents}
             rollback_safe=not repair and all((previous/name).is_file() and not (previous/name).is_symlink() for name in required_files)
@@ -125,9 +97,9 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
             fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
             with os.fdopen(fd,'w',encoding='utf-8') as f:
                 f.write(content);f.flush()
-                if name in ('go2rtc.json','ftp.passwd','ftp.group'):
+                if name=='go2rtc.json':
                     if service_gid is not None:os.fchown(f.fileno(),-1,service_gid)
-                    os.fchmod(f.fileno(),0o640 if service_gid is not None or name=='go2rtc.json' else 0o600)
+                    os.fchmod(f.fileno(),0o640)
                 os.fsync(f.fileno())
         if validate(new_dir) is not True:raise ReconcileError('candidate configuration rejected')
         _sync_dir(new_dir)

@@ -3,7 +3,7 @@ import os,subprocess,tempfile,unittest
 from pathlib import Path
 from sys import path
 path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from sunhill_nvr import ftp_accounts,nginx_config,fd_mount
+from sunhill_nvr import nginx_config,fd_mount
 
 @unittest.skipUnless(os.environ.get('SUNHILL_UBUNTU_INTEGRATION')=='1','requires prepared Ubuntu 26.04')
 class UbuntuConfigurationTests(unittest.TestCase):
@@ -34,10 +34,4 @@ class UbuntuConfigurationTests(unittest.TestCase):
         config=root/'nginx.conf';config.write_text(f'pid {root}/nginx.pid;\nerror_log stderr;\nevents {{}}\nhttp {{ include {server}; }}\n')
         result=subprocess.run(['/usr/sbin/nginx','-t','-c',str(config)],capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stderr)
- def test_proftpd_real_protocol_and_generated_configuration(self):
-    script=Path(__file__).with_name('proftpd_live_smoke.py')
-    result=subprocess.run(['sudo','-n','env','SUNHILL_DISPOSABLE_TEST_VM=1','/usr/bin/python3',str(script)],capture_output=True,text=True,timeout=180)
-    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-    self.assertIn('PASS: real restart and account revocation',result.stdout)
-
 if __name__=='__main__':unittest.main()

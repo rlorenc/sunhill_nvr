@@ -14,10 +14,8 @@ jobs:
       - name: Install integration tools
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg openssl nginx proftpd-core apparmor apparmor-utils python3-opencv opencv-data tesseract-ocr tesseract-ocr-eng
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg openssl nginx python3-opencv opencv-data tesseract-ocr tesseract-ocr-eng
           sudo useradd --user-group --no-create-home --shell /usr/sbin/nologin sunhill
-          sudo apparmor_parser -r -T /etc/apparmor.d/proftpd
-          sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
       - name: Check shell and browser script syntax
         run: |
           bash -n install.sh
@@ -55,7 +53,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sunhill-browser"
           "$RUNNER_TEMP/sunhill-browser/bin/pip" install playwright==1.57.0
           echo "SUNHILL_BROWSER_PYTHON=$RUNNER_TEMP/sunhill-browser/bin/python" >> "$GITHUB_ENV"
-      - name: Install the exact candidate archive on an isolated VM and test FTP, browser audio and updates
+      - name: Install the exact candidate archive on an isolated VM and test RTSP-only, archive, browser audio and updates
         run: |
           git checkout -B main "$GITHUB_SHA"
           version=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')

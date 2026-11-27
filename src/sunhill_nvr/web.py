@@ -26,10 +26,10 @@ from .media_layout import validate_media_layout,nested_auxiliary
 from .cameras import Camera, validate, with_credentials
 from . import camera_discovery,player_assets,camera_statistics,camera_control,camera_settings,camera_events,live_workspace,camera_reboot,motion_search,object_analytics,onvif_capabilities,camera_firmware
 from .nginx_config import HOST
-from . import rollback_history
+from . import rollback_history,device_diagnosis,motion_boxes
 from .fd_mount import MountBoundary,MountUnavailable
 from .files import FileBody, InvalidRange, acquire_shared, open_confined, open_export, delete_export, parse_range, recorded_identity
-from . import archive_compat, __version__, approved_update, ftp_accounts, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
+from . import archive_compat, __version__, approved_update, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
 
 MAX_BODY=16*1024
 ARCHIVE_PAGE_SIZE=10000
@@ -567,18 +567,13 @@ class Application:
                 by_user={u['id']:u for u in users}
                 for uid,cid,download in db.execute('SELECT user_id,camera_id,may_download FROM camera_permissions ORDER BY camera_id'):
                     if uid in by_user:by_user[uid]['permissions'].append({'id':cid,'download':bool(download)})
-                accounts=[{'id':r[0],'username':r[1],'enabled':bool(r[2]),'camera_id':r[3]}
-                          for r in db.execute('SELECT id,username,enabled,home_camera_id FROM ftp_accounts ORDER BY username')]
                 rows=db.execute('SELECT c.id,c.slug,c.name,c.enabled,d.record_mode,d.onvif_url,d.onvif_username,d.onvif_password IS NOT NULL AND d.onvif_password<>\'\',d.clock_offset,d.clock_checked,d.clock_error,d.onvif_auth FROM cameras c JOIN camera_details d ON d.camera_id=c.id ORDER BY c.name').fetchall()
                 count=sum(bool(r[3]) and r[5] is not None for r in rows);now=int(time.time());max_age=clock_service.max_sample_age(count)
                 cameras=[{'id':r[0],'slug':r[1],'name':r[2],'enabled':bool(r[3]),'recording':r[4],'accounts':[],
                           'onvif':{'url':r[5] or '', 'username':r[6] or '', 'password_configured':bool(r[7]),
                                    'offset':r[8],'checked':r[9],'error':r[10],'auth_mode':r[11],
                                    'fresh':monitor.sample_fresh(r[9],now,max_age)}} for r in rows]
-                by_camera={c['id']:c for c in cameras}
-                for cid,fid in db.execute('SELECT camera_id,ftp_account_id FROM camera_ftp_accounts ORDER BY ftp_account_id'):
-                    if cid in by_camera:by_camera[cid]['accounts'].append(fid)
-            return '200 OK',{'users':users,'accounts':accounts,'cameras':cameras,'rtsp_only':database.rtsp_only(db)},[]
+            return '200 OK',{'users':users,'accounts':[],'cameras':cameras,'rtsp_only':True},[]
         if url=='/api/users' and method=='GET':
             self.admin(user)
             rows=db.execute('SELECT id,username,role,enabled FROM users ORDER BY username').fetchall()
@@ -648,82 +643,6 @@ class Application:
                 db.rollback();raise APIError('400 Bad Request',str(error))
             except (ValueError,TypeError,sqlite3.IntegrityError):
                 db.rollback();raise APIError('400 Bad Request','Nieprawidłowe dane lub ostatni aktywny administrator')
-        if (url=='/api/ftp-accounts' or url.startswith('/api/ftp-accounts/') or re.fullmatch(r'/api/cameras/[1-9][0-9]{0,9}/ftp-accounts',url)) and database.rtsp_only(db):
-            self.admin(user);raise APIError('410 Gone','FTP wycofano; użyj RTSP')
-        if url=='/api/ftp-accounts' and method=='GET':
-            self.admin(user)
-            rows=db.execute('SELECT id,username,enabled,home_camera_id FROM ftp_accounts ORDER BY username').fetchall()
-            return '200 OK',{'accounts':[{'id':r[0],'username':r[1],'enabled':bool(r[2]),'camera_id':r[3]} for r in rows]},[]
-        if url=='/api/ftp-accounts' and method=='POST':
-            self.admin(user)
-            data=self.json_body(environ)
-            if set(data)-{'username','password','camera_id'}:raise APIError('400 Bad Request','Nieprawidłowe dane FTP')
-            name=data.get('username');camera_id=data.get('camera_id')
-            try:
-                if not isinstance(name,str) or not ftp_accounts.USERNAME.fullmatch(name):raise ValueError()
-                if camera_id is not None and (type(camera_id) is not int or camera_id<=0):raise ValueError()
-                password_hash=ftp_accounts.make_hash(data.get('password'))
-                with db:
-                    db.execute('BEGIN IMMEDIATE');self.current_admin(db,token)
-                    cur=db.execute('INSERT INTO ftp_accounts(username,password_hash,home_camera_id) VALUES (?,?,?)',(name,password_hash,camera_id))
-                    self.audit(db,user[0],'ftp.create','ftp',cur.lastrowid)
-                return '201 Created',{'id':cur.lastrowid},[]
-            except security.PasswordValidationError as error:raise APIError('400 Bad Request',str(error))
-            except (ValueError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowe lub istniejące konto FTP')
-        match=re.fullmatch(r'/api/ftp-accounts/([1-9][0-9]{0,9})',url)
-        if match and method=='PATCH':
-            self.admin(user);fid=int(match.group(1));data=self.json_body(environ)
-            if not data or set(data)-{'enabled','password','camera_id'} or ('enabled' in data and type(data['enabled']) is not bool):raise APIError('400 Bad Request','Nieprawidłowe dane FTP')
-            try:
-                new_hash=ftp_accounts.make_hash(data['password']) if 'password' in data else None
-                # Serialize scope changes against camera/account assignments.
-                db.execute('BEGIN IMMEDIATE')
-                with db:
-                    self.current_admin(db,token)
-                    row=db.execute('SELECT enabled,home_camera_id FROM ftp_accounts WHERE id=?',(fid,)).fetchone()
-                    if not row:raise ValueError()
-                    camera_id=data.get('camera_id',row[1])
-                    if camera_id is not None:
-                        if type(camera_id) is not int or camera_id<=0 or not db.execute('SELECT 1 FROM cameras WHERE id=?',(camera_id,)).fetchone():raise ValueError()
-                        if db.execute('SELECT 1 FROM camera_ftp_accounts WHERE ftp_account_id=? AND camera_id<>? LIMIT 1',(fid,camera_id)).fetchone():
-                            raise APIError('409 Conflict','Usuń pozostałe przypisania konta przed ograniczeniem do jednej kamery')
-                    db.execute('UPDATE ftp_accounts SET enabled=?,password_hash=COALESCE(?,password_hash),home_camera_id=? WHERE id=?',(int(data.get('enabled',bool(row[0]))),new_hash,camera_id,fid))
-                    self.audit(db,user[0],'ftp.update','ftp',fid)
-                return '200 OK',{'ok':True},[]
-            except security.PasswordValidationError as error:raise APIError('400 Bad Request',str(error))
-            except (ValueError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowe dane FTP')
-        if match and method=='DELETE':
-            self.admin(user);fid=int(match.group(1))
-            try:
-                with db:
-                    db.execute('BEGIN IMMEDIATE');self.current_admin(db,token)
-                    count=db.execute('DELETE FROM ftp_accounts WHERE id=?',(fid,)).rowcount
-                    if count:self.audit(db,user[0],'ftp.delete','ftp',fid)
-            except sqlite3.IntegrityError:raise APIError('409 Conflict','Konto FTP jest przypisane do kamery')
-            if not count:raise APIError('404 Not Found','Nie znaleziono konta FTP')
-            return '200 OK',{'ok':True},[]
-        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/ftp-accounts',url)
-        if match and method=='GET':
-            self.admin(user);cid=int(match.group(1))
-            if not db.execute('SELECT 1 FROM cameras WHERE id=?',(cid,)).fetchone():raise APIError('404 Not Found','Nie znaleziono kamery')
-            rows=db.execute('SELECT ftp_account_id FROM camera_ftp_accounts WHERE camera_id=?',(cid,)).fetchall()
-            return '200 OK',{'accounts':[r[0] for r in rows]},[]
-        if match and method=='POST':
-            self.admin(user);cid=int(match.group(1));data=self.json_body(environ);ids=data.get('accounts')
-            if not isinstance(ids,list) or len(ids)>1000 or any(type(x) is not int or x<=0 for x in ids) or len(set(ids))!=len(ids):
-                raise APIError('400 Bad Request','Nieprawidłowa lista kont FTP')
-            try:
-                with db:
-                    db.execute('BEGIN IMMEDIATE');self.current_admin(db,token)
-                    db.execute('DELETE FROM camera_ftp_accounts WHERE camera_id=?',(cid,))
-                    if not db.execute('SELECT 1 FROM cameras WHERE id=?',(cid,)).fetchone():raise ValueError()
-                    for fid in ids:
-                        account=db.execute('SELECT home_camera_id FROM ftp_accounts WHERE id=?',(fid,)).fetchone()
-                        if not account or (account[0] is not None and account[0]!=cid):raise ValueError()
-                        db.execute('INSERT INTO camera_ftp_accounts VALUES (?,?)',(cid,fid))
-                    self.audit(db,user[0],'camera.ftp','camera',cid)
-                return '200 OK',{'ok':True},[]
-            except (ValueError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowa lista kont FTP')
         if url=='/api/live-workspace' and method in ('GET','POST'):
             if method=='GET':
                 return '200 OK',{'workspace':live_workspace.read(db,user)},[]
@@ -773,7 +692,7 @@ class Application:
             gateway_failed=bool(gateway and gateway[0]=='stream_service_error')
             now=int(time.time());stream_age=stream_health.max_sample_age(sum(1 for row in rows if row[3]))
             result=[{'id':r[0],'slug':r[1],'name':r[2],'may_download':security.may_access(db,user,r[0],download=True),'sub_configured':bool(r[4]),'health':(r[5] or 'unknown') if monitor.sample_fresh(r[10],now,monitor.HEALTH_MAX_AGE) else 'unknown','health_checked_at':r[10],'last_file_at':r[6],'enabled':bool(r[3]),'stream_health':('unknown' if not monitor.sample_fresh(r[8],now,stream_age) or (gateway and gateway[0]=='stream_service_ok' and r[8]<gateway[1]) else (r[7] or 'unknown')),'stream_checked_at':r[8],
-                     'stream_gateway_failed':gateway_failed,'recording_pause_reason':paused if r[3] and r[9] in ('rtsp','ftp') else None} for r in rows if user[2]=='admin' or security.may_access(db,user,r[0])]
+                     'stream_gateway_failed':gateway_failed,'recording_pause_reason':paused if r[3] and r[9]=='rtsp' else None} for r in rows if user[2]=='admin' or security.may_access(db,user,r[0])]
             return '200 OK',{'cameras':result},[]
         if url=='/api/cameras' and method=='POST':
             self.admin(user)
@@ -792,7 +711,6 @@ class Application:
                     camera=Camera(camera.slug,camera.name,with_credentials(camera.main_url,username,password),
                                   with_credentials(camera.sub_url,username,password) if camera.sub_url else None,camera.recording)
                 validate(camera)
-                if camera.recording=='ftp' and database.rtsp_only(db):raise ValueError('FTP retired')
                 db.execute('BEGIN IMMEDIATE')
                 self.current_admin(db,token)
                 existing=db.execute('SELECT cameras.slug,camera_details.sub_url FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id').fetchall()
@@ -998,29 +916,31 @@ class Application:
                     if extended and isinstance(body,dict) and set(body)=={'control','value'} and isinstance(body['control'],str) and camera_settings.valid(body['control'],body['value']):control,value=body['control'],body['value']
                     else:control,value=camera_control.validate_command(body)
                 except camera_control.ControlError as exc:raise APIError('400 Bad Request',str(exc)) from None
+            if method=='GET':
+                force=parse_qs(environ.get('QUERY_STRING','')).get('refresh')==['1']
+                result=None if force else device_diagnosis.cached(db,cid,row)
+                fresh=result is None
+                if fresh:result=device_diagnosis.diagnose(row)
+                self.current_admin(db,token)
+                if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
+                if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row or (fresh and workers.writes_permitted() and not device_diagnosis.persist(db,cid,row,result,result.get('checked_at'))):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                return '200 OK',result if extended else {k:v for k,v in result.items() if k!='settings'},[]
+            diagnosis=device_diagnosis.cached(db,cid,row) or device_diagnosis.diagnose(row)
+            permitted=set(diagnosis.get('controls',{}))|{x['key'] for x in diagnosis.get('settings',[])}
+            if 'light_available' in permitted:permitted.add('light')
+            if 'presets' in permitted:permitted.add('preset')
+            if control not in permitted:raise APIError('422 Unprocessable Entity','Kamera nie potwierdziła tej funkcji')
             try:
                 with camera_control.Reolink(row[0]) as client:
-                    if method=='GET':
-                        result=camera_control.capabilities(client)
-                        if extended:
-                            settings,partial=camera_settings.read(client);result['settings']=settings;result['partial']=result.get('partial',False) or partial
-                    else:
-                        # Recheck authority after remote authentication; no DB write lock during network I/O.
-                        self.current_admin(db,token)
-                        latest=db.execute('SELECT main_url FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
-                        if not latest or latest[0]!=row[0] or not security.may_access(db,user,cid,live=True):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
-                        if extended and (control in camera_settings.FIELDS or control in ('ir_mode','floodlight_brightness')):camera_settings.apply(client,control,value)
-                        else:camera_control.apply(client,control,value)
-                if method=='POST':
-                    with db:self.audit(db,user[0],'camera.control.'+control,'camera',cid)
-                    return '200 OK',{'ok':True},[]
-            except camera_control.ControlError as exc:
-                if method=='POST':raise APIError('422 Unprocessable Entity',str(exc)) from None
-                result={'controls':{},'partial':True,'message':str(exc)}
-            result=camera_control.supplement_identity(result,*row)
-            self.current_admin(db,token)
-            if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
-            return '200 OK',result,[]
+                    self.current_admin(db,token)
+                    if db.execute(device_diagnosis.TARGET_SQL,(cid,)).fetchone()!=row or not security.may_access(db,user,cid,live=True):raise APIError('409 Conflict','Konfiguracja kamery została zmieniona')
+                    if extended and (control in camera_settings.FIELDS or control in ('ir_mode','floodlight_brightness')):camera_settings.apply(client,control,value)
+                    else:camera_control.apply(client,control,value)
+                with db:
+                    db.execute('DELETE FROM camera_diagnosis WHERE camera_id=?',(cid,))
+                    self.audit(db,user[0],'camera.control.'+control,'camera',cid)
+                return '200 OK',{'ok':True},[]
+            except camera_control.ControlError as exc:raise APIError('422 Unprocessable Entity',str(exc)) from None
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/onvif',url)
         if match and method in ('GET','PATCH'):
             self.admin(user);cid=int(match.group(1))
@@ -1068,8 +988,6 @@ class Application:
                     self.current_admin(db,token)
                     camera_row=db.execute('SELECT slug FROM cameras WHERE id=?',(cid,)).fetchone()
                     if not camera_row:raise APIError('404 Not Found','Nie znaleziono kamery')
-                    if db.execute('SELECT 1 FROM ftp_accounts WHERE home_camera_id=? LIMIT 1',(cid,)).fetchone():
-                        raise APIError('409 Conflict','Najpierw zmień katalog kont FTP przypisanych do tej kamery albo usuń te konta')
                     db.execute('DELETE FROM system_health WHERE name=?',('clock:'+str(cid),))
                     clear_audio_status(db,camera_row[0])
                     camera_statistics.clear(db,cid)
@@ -1101,7 +1019,6 @@ class Application:
                     camera=Camera(camera.slug,camera.name,with_credentials(camera.main_url,username,password),
                                   with_credentials(camera.sub_url,username,password) if camera.sub_url else None,camera.recording,camera.enabled)
                 validate(camera)
-                if camera.recording=='ftp' and database.rtsp_only(db):raise ValueError('FTP retired')
                 existing=db.execute('SELECT cameras.slug,camera_details.sub_url FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id WHERE cameras.id<>?',(cid,)).fetchall()
                 aliases={alias for slug,sub in existing for alias in ([slug,slug+'_sub'] if sub else [slug])}
                 new_aliases={camera.slug}|({camera.slug+'_sub'} if camera.sub_url else set())
@@ -1256,7 +1173,7 @@ class Application:
                 raise APIError('404 Not Found','Nieznany profil')
             return '200 OK',{'ok':True},[]
         if url=='/api/metadata/live' and method=='GET':
-            return '200 OK',{'cameras':object_analytics.live(db,user)},[]
+            return '200 OK',{'cameras':object_analytics.live(db,user),'motion':motion_boxes.live(db,user)},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/metadata-(settings|history)',url)
         if match:
             cid=int(match.group(1));part=match.group(2)
@@ -1276,7 +1193,7 @@ class Application:
                 if not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
                 params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
                 if set(params)!={'at_ms'} or len(params['at_ms'])!=1 or not re.fullmatch(r'[0-9]{1,13}',params['at_ms'][0]):raise APIError('400 Bad Request','Nieprawidłowy czas')
-                return '200 OK',{'frames':object_analytics.history(db,cid,int(params['at_ms'][0]),user)},[]
+                return '200 OK',{'frames':object_analytics.history(db,cid,int(params['at_ms'][0]),user),'motion_frames':motion_boxes.history(db,cid,int(params['at_ms'][0]))},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/event-settings',url)
         if match and method in ('GET','PATCH'):
             self.admin(user);cid=int(match.group(1))

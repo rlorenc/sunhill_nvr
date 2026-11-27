@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 from sys import path
 path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from sunhill_nvr.cli import initialize,initialize_setup,migrate_database,export_loop,control_once
+from sunhill_nvr.cli import initialize,initialize_setup,migrate_database,export_loop
 from sunhill_nvr.config import parse
 from sunhill_nvr.database import open_db
 class CLITests(unittest.TestCase):
@@ -89,26 +89,6 @@ class CLITests(unittest.TestCase):
         self.assertEqual(process.returncode,0,error);self.assertIn('stopped',output)
     finally:
         if process.poll() is None:process.kill();process.wait()
- def test_controller_stops_ftp_when_database_unavailable(self):
-    from types import SimpleNamespace
-    with tempfile.TemporaryDirectory() as t:
-        cfg=SimpleNamespace(database=Path(t)/'missing.sqlite',archive=Path(t),control_state=Path(t))
-        with patch('sunhill_nvr.cli.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000,pw_gid=1000)),patch('sunhill_nvr.cli.controller.set_ftp_running') as service:
-            with self.assertRaises(sqlite3.OperationalError):control_once(cfg)
-            service.assert_called_once_with(False)
- def test_controller_passes_supplementary_groups_to_ftp_configuration(self):
-    from types import SimpleNamespace
-    with tempfile.TemporaryDirectory() as t:
-        root=Path(t);database_path=root/'db.sqlite';sqlite3.connect(database_path).close()
-        cfg=SimpleNamespace(database=database_path,archive=root,control_state=root)
-        def guarded(db,config,uid,gid,*,guard_factory,reconcile_config,writer_check):
-            reconcile_config(db,config.control_state,config.archive,uid,gid)
-        with patch('sunhill_nvr.cli.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1200,pw_gid=1200)), \
-             patch('sunhill_nvr.cli.os.getgrouplist',return_value=[1200,1300]), \
-             patch('sunhill_nvr.cli.controller.guarded_reconcile',side_effect=guarded), \
-             patch('sunhill_nvr.cli.controller.reconcile') as reconcile:
-            control_once(cfg)
-        self.assertEqual(reconcile.call_args.kwargs['supplementary_gids'],(1200,1300))
  def test_recorder_health_write_failure_does_not_interrupt_recording_tick(self):
     from types import SimpleNamespace
     from sunhill_nvr.cli import recorder_loop

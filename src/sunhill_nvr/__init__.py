@@ -1,3 +1,3 @@
 """Sunhill NVR - local surveillance application."""
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"

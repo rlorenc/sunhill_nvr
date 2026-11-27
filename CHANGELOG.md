@@ -460,3 +460,11 @@ Pełna historia znajduje się w bundle Git. Poniżej ostatnie 12 commitów; opis
 | `88d8032` | Improve archive paging, recorder alarms and account security |
 | `50b5e21` | Improve monitoring and archive failure handling |
 | `1c61a13` | Improve recording resilience and archive export workflows |
+
+### 1.1.4 - zmiany uzgodnione 2026-11-27
+
+- UI: kompaktowe ustawienia sprzętowe, menu użytkownika otwierane kliknięciem (ustawienia, wyloguj), brak osobnej zakładki zdarzeń; historia pozostaje. Legenda kolorów zdarzeń archiwum. `static/app.js`, `app.css`, `index.html`.
+- Diagnoza urządzenia i zapis w SQLite (migracja 14); deklaracje możliwości Reolink, odczyt SDP G.711, usługi ONVIF; nie pokazujemy reflektora i talkback w RLC-510A. Restart oparty na dostępności usługi Device, firmware na deklaracji HTTPFirmwareUpgrade. `device_diagnosis.py`, `web.py`. Nie jest to certyfikacja wszystkich modeli ani odbiór sprzętowy.
+- Lokalny obszar ruchu, niezależny od semantycznej klasyfikacji: `motion_boxes.py`, retencja powiązana z archiwum; 320x180, 2 fps, maksymalnie 32 kamery; nie rekonstruuje brakujących historycznych współrzędnych. Wydajność i jakość na realnym sprzęcie niezmierzone.
+- Wycofano aktywne FTP: usunięto moduły kont i AppArmor FTP, API/GUI kont, polecenia konfiguratora; instalator i konfiguracja tylko RTSP. Zachowano historyczny schemat, migrację, niskopoziomowe szablony i odczyt stanu usług starszych wydań niezbędne dla zgodności/rollbacku; brak globalnego purge ProFTPD. `--resume` dla 0.2.x wymaga oryginalnego 1.1.3, potem `--update --rtsp-only`.
+- Weryfikacja: 41 testów celowanych zaliczonych po poprawkach (`test_camera_diagnosis_motion`, `test_recovery_migration`, `test_rtsp_only_deployment`, `test_security.PasswordFormTests`, `test_cli`, 4 scenariusze `test_web`), browser smoke i składnia JS/Bash. Wcześniejsza regresja 812: 804 zaliczone, 5 błędów/niepowodzeń, 3 pominięte; pięć problemów poprawiono i ponownie sprawdzono celowo. Pełna regresja finalnego drzewa i zmienione scenariusze GitHub Actions na Ubuntu 26.04 nieuruchomione. Statusów odbioru 80 pozycji nie podniesiono. Kandydat, nie wydanie zweryfikowane; nie zmieniano instalacji ani zdalnego repozytorium.

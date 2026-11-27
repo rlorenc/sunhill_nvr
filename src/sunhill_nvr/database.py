@@ -144,6 +144,11 @@ ALTER TABLE camera_metadata_options ADD COLUMN source_mode TEXT NOT NULL DEFAULT
 CREATE TABLE face_profiles (id TEXT PRIMARY KEY, label TEXT NOT NULL, model_sha256 TEXT NOT NULL);
 CREATE TABLE face_templates (id INTEGER PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE, feature_json TEXT NOT NULL);
 CREATE INDEX idx_face_templates_profile ON face_templates(profile_id);
+''',
+14: '''
+CREATE TABLE camera_diagnosis (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL, checked INTEGER NOT NULL, result_json TEXT NOT NULL);
+CREATE TABLE camera_motion_latest (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL);
+CREATE TABLE camera_motion_history (camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(camera_id,stamp_ms)) WITHOUT ROWID;
 '''
 }
 

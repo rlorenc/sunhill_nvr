@@ -14,7 +14,7 @@ import pwd
 import sqlite3
 from urllib.parse import quote
 from pathlib import Path
-from . import archive,database,jobs,security,workers,activity_rpc,controller,ftp_accounts
+from . import archive,database,jobs,security,workers,activity_rpc,controller
 from .atomic_publish import publish_new_file
 from .config import load
 from .export_service import run_one,cleanup_stale_temporary
@@ -31,6 +31,7 @@ def _initialize(config, credentials: tuple[str,str] | None) -> str | None:
     try:
         with contextlib.closing(database.open_db(temporary)) as db:
             security.initialize(db);database.migrate(db);archive.initialize(db);jobs.initialize(db)
+            database.retire_ftp(db,now=int(time.time()))
             if credentials is not None:security.complete_console_setup(db,*credentials)
             with db:
                 db.executemany('INSERT INTO system_settings(key,value) VALUES (?,?)',
@@ -60,7 +61,7 @@ def migrate_database(config, *, rtsp_only: bool=False) -> None:
         if not result or result[0]!='ok':raise RuntimeError('database integrity check failed')
         if db.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('database foreign key check failed')
         security.initialize(db);archive.initialize(db);jobs.initialize(db);database.migrate(db)
-        if rtsp_only:database.retire_ftp(db,now=int(time.time()))
+        database.retire_ftp(db,now=int(time.time()))
         # Preserve existing external mount location, or learn it from the
         # currently accessible archive. Never bind the database to its UUID.
         from .storage_paths import required_location,remember_location
@@ -191,25 +192,6 @@ def recorder_loop(config, *, once: bool=False) -> None:
     finally:
         worker.stop_all()
 
-def control_once(config, service_user: str='sunhill') -> None:
-    try:
-        account=pwd.getpwnam(service_user)
-        supplementary_gids=tuple(os.getgrouplist(service_user,account.pw_gid))
-        # Read-only access: privileged controller must not create root-owned SQLite WAL files.
-        uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
-        with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=10)) as db:
-            def reconcile_with_groups(db,state,archive,uid,gid):
-                controller.reconcile(db,state,archive,uid,gid,supplementary_gids=supplementary_gids)
-            controller.guarded_reconcile(db,config,account.pw_uid,account.pw_gid,guard_factory=workers.storage_guard,reconcile_config=reconcile_with_groups,
-                                         writer_check=lambda:workers.recording_space_available(db,config))
-    except Exception:
-        # If the guard itself cannot run, keeping FTP available would allow
-        # writes without knowing which filesystem backs the archive path.
-        try:controller.set_ftp_running(False)
-        except controller.ControllerError:logging.exception('Failed to stop FTP after controller error')
-        raise
-
-
 def control_rtsp_once(config, service_user: str='sunhill') -> None:
     account=pwd.getpwnam(service_user)
     uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
@@ -237,12 +219,10 @@ def main(argv=None) -> int:
     preview=sub.add_parser('retention-preview-worker');preview.add_argument('--once',action='store_true')
     enroll=sub.add_parser('enroll-storage');enroll.add_argument('--allow-rootfs',action='store_true')
     sub.add_parser('activity-helper')
-    sub.add_parser('control-once')
     sub.add_parser('control-rtsp-once')
     sub.add_parser('verify-rtsp-recorders',help='Decode one actual frame from every enabled recording camera; no configuration changes')
     sub.add_parser('check-storage')
     sub.add_parser('prepare-storage')
-    sub.add_parser('prepare-ftp-homes')
     firmware=sub.add_parser('camera-firmware',help='Local administrator: ONVIF firmware upload with explicit vendor identity and SHA-256')
     firmware.add_argument('camera_id',type=int);firmware.add_argument('file',type=Path);firmware.add_argument('--sha256',required=True);firmware.add_argument('--manufacturer',required=True);firmware.add_argument('--model',required=True);firmware.add_argument('--hardware',required=True);firmware.add_argument('--confirm',action='store_true');firmware.add_argument('--expected-version',help='Exact target firmware version for read-only verification after upload')
     model=sub.add_parser('analytics-model-install',help='Install a trusted local ONNX model after SHA-256 and inference checks')
@@ -359,8 +339,8 @@ def main(argv=None) -> int:
     if args.command=='health-worker':
         if args.once:periodic(config,workers.health_once,60,once=True);return 0
         import threading
-        from . import camera_events,object_analytics,tamper
-        stop=threading.Event();threads=[threading.Thread(target=worker.supervise,args=(config,stop),daemon=True) for worker in (camera_events,object_analytics,tamper)]
+        from . import camera_events,object_analytics,tamper,motion_boxes
+        stop=threading.Event();threads=[threading.Thread(target=worker.supervise,args=(config,stop),daemon=True) for worker in (camera_events,object_analytics,tamper,motion_boxes)]
         for thread in threads:thread.start()
         try:periodic(config,workers.health_once,60)
         finally:
@@ -391,18 +371,7 @@ def main(argv=None) -> int:
         except (OSError,ValueError,RuntimeError) as exc:
             logging.warning('Storage preparation unavailable: %s',exc)
         return 0
-    if args.command=='control-once':control_once(config);return 0
     if args.command=='control-rtsp-once':control_rtsp_once(config);return 0
-    if args.command=='prepare-ftp-homes':
-        account=pwd.getpwnam('sunhill')
-        if os.geteuid()!=account.pw_uid or os.getegid()!=account.pw_gid or os.geteuid()==0:
-            raise ValueError('FTP home preparation must run as sunhill')
-        uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
-        with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=10)) as db:
-            storage_check=workers.storage_guard(db,config.archive)
-            def guard():return storage_check() and workers.recording_space_available(db,config)
-            ftp_accounts.prepare_homes(config.archive,ftp_accounts.read_published_accounts(config.control_state),guard,uid=account.pw_uid,gid=account.pw_gid)
-        return 0
     if args.command=='check-storage':
         uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
         with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=10)) as db:

@@ -14,7 +14,7 @@ def main(argv=None) -> int:
     parser.add_argument('--rtsp-only',action='store_true')
     args=parser.parse_args(argv)
     tls={'tls_certificate':Path('/opt/sunhill-nvr/config/tls/current/fullchain.pem'),'tls_key':Path('/opt/sunhill-nvr/config/tls/current/key.pem')} if args.lan_tls else {}
-    generate(load(args.config),args.output,rtsp_only=args.rtsp_only,**tls)
+    generate(load(args.config),args.output,rtsp_only=True,**tls)
     return 0
 
 

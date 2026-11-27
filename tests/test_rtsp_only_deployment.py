@@ -32,12 +32,13 @@ class RTSPOnly(unittest.TestCase):
     def test_gateway_without_ftp_validation_or_disk_dependency(self):
         db=sqlite3.connect(':memory:');security.initialize(db);database.migrate(db)
         db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
-        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://host/live','ftp')")
+        db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://host/live','rtsp')")
         # Even missing FTP tables must not block the RTSP-only controller.
         db.execute('DROP TABLE camera_ftp_accounts');db.execute('DROP TABLE ftp_accounts')
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);gateway=config_reconcile.desired_gateway(db)
-            config_reconcile.apply(root,dict(gateway,**{'ftp.passwd':'old','ftp.group':'old'}),validate=lambda p:True,restart=lambda changed:True,service_gid=os.getgid())
+            config_reconcile.apply(root,gateway,validate=lambda p:True,restart=lambda changed:True,service_gid=os.getgid())
+            (root/'current'/'ftp.passwd').write_text('old');(root/'current'/'ftp.group').write_text('old')
             previous=(root/'current').resolve();calls=[]
             def run(args,**kw):
                 calls.append(args);return subprocess.CompletedProcess(args,0)
@@ -102,6 +103,7 @@ class RTSPOnly(unittest.TestCase):
             for name,text in old.items():(units/name).write_text(text)
             (state/'managed-units.json').write_text(json.dumps(sorted(old)))
             (state/'lifecycle.json').write_text(json.dumps(lifecycle.default()))
+            (root/'config').write_text('{}')
             calls=[]
             def run(args,**kw):
                 calls.append(args)

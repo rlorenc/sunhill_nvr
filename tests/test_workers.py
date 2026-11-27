@@ -110,14 +110,14 @@ class WorkerTests(unittest.TestCase):
     self.db.execute("INSERT INTO system_settings(key,value) VALUES('recorder_audio_seen:cam',?)",(str(999999999999999),));self.db.commit()
     update_recorder_audio(self.db,{'cam':(100_000_000_000,False)},now=100)
     self.assertEqual(self.db.execute("SELECT state FROM system_health WHERE name='recorder_audio:cam'").fetchone()[0],'recording_audio_missing')
- def test_ftp_audio_warning_is_retried_without_reprobing_unchanged_file(self):
+ def test_archive_audio_warning_is_retried_without_reprobing_unchanged_file(self):
     import os
     from datetime import datetime,timezone
     from types import SimpleNamespace
     from sunhill_nvr import workers
     now=int(datetime(2026,11,21,12,tzinfo=timezone.utc).timestamp())
     self.db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
-    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','ftp')");self.db.commit()
+    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','rtsp')");self.db.commit()
     with tempfile.TemporaryDirectory() as t:
         root=Path(t);file=root/'cam/2026/11/21/130000.mp4';file.parent.mkdir(parents=True);file.write_bytes(b'video');os.utime(file,(now-120,now-120))
         config=SimpleNamespace(archive=root,archive_lock=root/'archive.lock',timezone='Europe/Warsaw')
@@ -137,7 +137,7 @@ class WorkerTests(unittest.TestCase):
     from sunhill_nvr.files import open_confined,try_exclusive
     now=time.time()
     self.db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
-    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','ftp')");self.db.commit()
+    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','rtsp')");self.db.commit()
     with tempfile.TemporaryDirectory() as t:
         root=Path(t);file=root/'cam/2026/11/21/130000.mp4';file.parent.mkdir(parents=True);file.write_bytes(b'video');os.utime(file,(now-120,now-120))
         cfg=SimpleNamespace(archive=root,archive_lock=root/'archive.lock',timezone='Europe/Warsaw')
@@ -152,7 +152,7 @@ class WorkerTests(unittest.TestCase):
         with patch('sunhill_nvr.workers.storage_guard',return_value=lambda:True),patch('sunhill_nvr.workers.detector',return_value=lambda p:False),patch('sunhill_nvr.workers.probe',side_effect=probe):
             result=workers.index_once(cfg,self.db,now=now)
         self.assertEqual(len(calls),1);self.assertEqual((result.accepted,result.failed),(0,1));self.assertEqual(file.read_bytes(),b'changed')
- def test_ftp_audio_detection_uses_real_media_streams(self):
+ def test_archive_audio_detection_uses_real_media_streams(self):
     import os,subprocess,time
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -160,7 +160,7 @@ class WorkerTests(unittest.TestCase):
     from sunhill_nvr import workers
     now=int(time.time());day=datetime.fromtimestamp(now,ZoneInfo('Europe/Warsaw')).strftime('%Y/%m/%d')
     self.db.execute("INSERT INTO cameras VALUES(1,'cam','Cam',1)")
-    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','ftp')");self.db.commit()
+    self.db.execute("INSERT INTO camera_details(camera_id,main_url,record_mode) VALUES(1,'rtsp://cam','rtsp')");self.db.commit()
     with tempfile.TemporaryDirectory() as t:
         root=Path(t);folder=root/'cam'/day;folder.mkdir(parents=True);config=SimpleNamespace(archive=root,archive_lock=root/'archive.lock',timezone='Europe/Warsaw')
         silent=folder/'120000.mp4';sound=folder/'120100.mp4'

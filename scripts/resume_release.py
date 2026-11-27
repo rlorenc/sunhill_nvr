@@ -118,4 +118,4 @@ def prepare(root: Path,system: Path,source: Path, *, run=subprocess.run) -> str:
     finally:os.close(fd)
 
 if __name__=='__main__':
-    print(prepare(Path('/opt/sunhill-nvr'),Path('/etc/systemd/system'),Path(__file__).resolve().parents[1]))
+    raise SystemExit('Use original 1.1.3 package --resume, then update --rtsp-only')

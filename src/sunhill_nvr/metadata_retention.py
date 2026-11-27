@@ -11,7 +11,7 @@ from datetime import datetime
 
 # In-flight segments may be as long as one hour; allow publication/index lag.
 PUBLISH_GRACE = 2 * 3600
-NATIVE = "(source IN ('reolink','nvr-tamper') OR source LIKE 'onvif-rule:%' OR source LIKE 'local-rule:%')"
+NATIVE = "(source IN ('reolink','nvr-tamper','nvr-motion') OR source LIKE 'onvif-rule:%' OR source LIKE 'local-rule:%')"
 
 
 def intervals(rows):
@@ -66,6 +66,7 @@ def reconcile(db, *, guard, complete=False, removed=(), now=None):
             for start,end in scope:
                 for lo,hi in gaps(covered,start,min(end,cutoff)):
                     deleted+=db.execute('DELETE FROM camera_metadata_history WHERE camera_id=? AND stamp_ms>=? AND stamp_ms<?',(cid,lo,hi)).rowcount
+                    deleted+=db.execute('DELETE FROM camera_motion_history WHERE camera_id=? AND stamp_ms>=? AND stamp_ms<?',(cid,lo,hi)).rowcount
                     # Keep events touching any surviving footage, or still open.
                     deleted+=db.execute(f'''DELETE FROM event_markers WHERE camera_id=? AND {NATIVE}
                         AND ended_at IS NOT NULL AND started_at>=? AND ended_at<?''',

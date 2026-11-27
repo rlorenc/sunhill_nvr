@@ -93,7 +93,7 @@ def recording_space_available(db,config, *, inspect=space_for) -> bool:
     return free>=minimum
 
 def ensure_camera_directories(db,root: Path,guard) -> None:
-    """Create FTP camera roots under the verified archive without following links."""
+    """Create camera roots under the verified archive without following links."""
     if not guard():raise WorkerError('archive mount mismatch')
     flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
     root_fd=os.open(root,flags)
@@ -193,7 +193,7 @@ def index_once(config,db, *, full: bool=True, now: float | None=None, camera=Non
             logging.warning('AI archive reconciliation deferred: %s',type(exc).__name__)
     observations={}
     max_mtime=int(now+300)*1_000_000_000
-    for (slug,) in db.execute("SELECT cameras.slug FROM cameras JOIN camera_details ON camera_details.camera_id=cameras.id WHERE cameras.enabled=1 AND camera_details.record_mode IN ('rtsp','ftp')"):
+    for (slug,) in db.execute("SELECT cameras.slug FROM cameras JOIN camera_details ON camera_details.camera_id=cameras.id WHERE cameras.enabled=1 AND camera_details.record_mode ='rtsp'"):
         latest=db.execute('''SELECT r.mtime_ns,s.has_audio FROM recordings r LEFT JOIN recording_stream_info s ON s.relative_path=r.relative_path
             WHERE r.camera=? AND r.mtime_ns<=? ORDER BY r.mtime_ns DESC,r.id DESC LIMIT 1''',(slug,max_mtime)).fetchone()
         if latest is not None and latest[1] is not None:observations[slug]=(latest[0],bool(latest[1]))
@@ -299,7 +299,7 @@ def update_recorder_audio(db, observations: dict, *, now: int | None=None) -> No
     db.execute('BEGIN IMMEDIATE')
     try:
         for slug,(mtime,has_audio) in sorted(observations.items()):
-            row=db.execute("SELECT cameras.id FROM cameras JOIN camera_details ON camera_details.camera_id=cameras.id WHERE cameras.slug=? AND cameras.enabled=1 AND camera_details.record_mode IN ('rtsp','ftp')",(slug,)).fetchone()
+            row=db.execute("SELECT cameras.id FROM cameras JOIN camera_details ON camera_details.camera_id=cameras.id WHERE cameras.slug=? AND cameras.enabled=1 AND camera_details.record_mode ='rtsp'",(slug,)).fetchone()
             if not row:continue
             key='recorder_audio_seen:'+slug
             previous=db.execute('SELECT value FROM system_settings WHERE key=?',(key,)).fetchone()

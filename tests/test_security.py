@@ -18,7 +18,7 @@ class PasswordFormTests(unittest.TestCase):
             def handle_endtag(self,tag):
                 if tag=='form':self.form=None
         parser=Parser();parser.feed((Path(__file__).resolve().parents[1]/'src/sunhill_nvr/static/index.html').read_text())
-        self.assertCountEqual(parser.fields,[('setup-form','6','1024')]*2+[('own-password-form','6','1024')]*2+[('user-form','6','1024'),('ftp-form','6','128')])
+        self.assertCountEqual(parser.fields,[('setup-form','6','1024')]*2+[('own-password-form','6','1024')]*2+[('user-form','6','1024')])
 
 class SecurityTests(unittest.TestCase):
     def setUp(self):

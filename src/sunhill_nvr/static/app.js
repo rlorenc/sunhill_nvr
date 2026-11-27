@@ -371,8 +371,8 @@ function cameraHealthText(camera){
 function view(which) {
   const cameraWasHidden=$('camera-view').hidden;
   if(which!=='archive'&&!$('archive-view').hidden){$('archive-object-overlay').hidden=true;nativeArchiveCache={camera:null,at:0,frames:[]};resetMotionSearch();playbackGeneration++;archiveLoadGeneration++;calendarGeneration++;archiveAutoRecovery=null;$('archive-calendar-panel').open=false;clearTimeout(previewTimer);$('timeline-preview').hidden=true;$('archive-player').pause();clearArchiveBuffers();}
-  if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';$('events-view').hidden=which!=='events';
-  for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-events',which==='events'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
+  if(which!=='sync')stopSync();$('camera-view').hidden=which!=='cameras';$('archive-view').hidden=which!=='archive';$('sync-view').hidden=which!=='sync';$('admin-view').hidden=which!=='admin';$('settings-view').hidden=which!=='settings';
+  for(const [id,active] of [['show-cameras',which==='cameras'],['show-archive',which==='archive'||which==='sync'],['show-sync',which==='sync'],['show-settings',which==='settings'],['show-admin',which==='admin']]){const tab=$(id);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
   if(which==='cameras'&&cameraWasHidden)renderCameras();
   else if(which!=='cameras'){
     stopTalkback();closeLiveMenu();stopLiveLayoutGesture();liveLayoutEditing=false;nativeTracks.clear();
@@ -447,7 +447,7 @@ function loadDeviceInfo(camera,force=false,extended=false){
   const old=deviceCache.get(key);
   if(!force&&old&&(old.pending||Date.now()-old.time<120000))return old.promise;
   const entry={pending:true,time:Date.now()};
-  entry.promise=deviceQueue.then(()=>{if(me!==owner||me?.role!=='admin')throw new Error('Sesja została zmieniona.');return api('/api/cameras/'+camera.id+(extended?'/settings':'/controls'));});
+  entry.promise=deviceQueue.then(()=>{if(me!==owner||me?.role!=='admin')throw new Error('Sesja została zmieniona.');return api('/api/cameras/'+camera.id+(extended?'/settings':'/controls')+(force?'?refresh=1':''));});
   deviceQueue=entry.promise.catch(()=>{});deviceCache.set(key,entry);
   entry.promise.then(()=>{entry.pending=false;entry.time=Date.now();},()=>{entry.pending=false;entry.time=Date.now();});
   if(deviceCache.size>256){for(const [k,v] of deviceCache)if(!v.pending&&k!==key){deviceCache.delete(k);break;}}
@@ -493,12 +493,12 @@ function deviceControlPanel(camera){
     if(typeof c.light==='boolean')fields.append(button(c.light?'Wyłącz reflektor':'Włącz reflektor','light',!c.light));
     if(Number.isInteger(c.brightness))fields.append(range('Jasność reflektora (%)','brightness',{value:c.brightness,min:0,max:100}));
     if(c.ir&&Array.isArray(c.ir.options)&&c.ir.options.length){
-      const label=element('label','Podczerwień');const select=element('select');select.setAttribute('aria-label','Podczerwień');
+      const label=element('label','Podczerwień','device-select-row');const select=element('select');select.setAttribute('aria-label','Podczerwień');
       for(const mode of c.ir.options)select.add(new Option({Auto:'Automatycznie',Off:'Wyłączona',On:'Włączona'}[mode],mode));select.value=c.ir.value;
       const apply=element('button','Zastosuj');apply.type='button';apply.addEventListener('click',()=>send('ir',select.value));label.append(select,apply);fields.append(label);
     }
     if(c.zoom)fields.append(range('Zoom optyczny','zoom',c.zoom));if(typeof c.autofocus==='boolean')fields.append(button(c.autofocus?'Wyłącz autofocus':'Włącz autofocus','autofocus',!c.autofocus));if(c.focus)fields.append(range('Ostrość','focus',c.focus));
-    if(Array.isArray(c.presets)&&c.presets.length){const label=element('label','Pozycja PTZ');const select=element('select');select.setAttribute('aria-label','Pozycja PTZ');for(const preset of c.presets)select.add(new Option(preset.name||'Pozycja '+preset.id,String(preset.id)));const go=element('button','Przejdź do pozycji');go.type='button';go.addEventListener('click',()=>send('preset',Number(select.value)));label.append(select,go);fields.append(label);}
+    if(Array.isArray(c.presets)&&c.presets.length){const label=element('label','Pozycja PTZ','device-select-row');const select=element('select');select.setAttribute('aria-label','Pozycja PTZ');for(const preset of c.presets)select.add(new Option(preset.name||'Pozycja '+preset.id,String(preset.id)));const go=element('button','Przejdź do pozycji');go.type='button';go.addEventListener('click',()=>send('preset',Number(select.value)));label.append(select,go);fields.append(label);}
     const groups=new Map();
     const translations={Auto:'Automatycznie',Color:'Kolor','Black&White':'Czarno-biały',On:'Włączona',Off:'Wyłączona',BackLightControl:'BLC',DynamicRangeControl:'WDR'};
     for(const info of settings){
@@ -506,11 +506,12 @@ function deviceControlPanel(camera){
       const group=groups.get(info.group);
       if(info.type==='bool')group.append(button(info.label+': '+(info.value?'włączone':'wyłączone')+' (zmień)',info.key,!info.value));
       else if(info.type==='range')group.append(range(info.label,info.key,info));
-      else if(info.type==='select'){const label=element('label',info.label);const select=element('select');select.setAttribute('aria-label',info.label);for(const option of info.options)select.add(new Option(translations[option]||option,option));select.value=info.value;const apply=element('button','Zastosuj');apply.type='button';apply.addEventListener('click',()=>send(info.key,select.value));label.append(select,apply);group.append(label);}
+      else if(info.type==='select'){const label=element('label',info.label,'device-select-row');const select=element('select');select.setAttribute('aria-label',info.label);for(const option of info.options)select.add(new Option(translations[option]||option,option));select.value=info.value;const apply=element('button','Zastosuj');apply.type='button';apply.addEventListener('click',()=>send(info.key,select.value));label.append(select,apply);group.append(label);}
     }
     loaded=true;
     status.textContent=(Object.keys(c).length||settings.length)?(result.partial?'Nie wszystkie funkcje odpowiedziały. Dostępne sterowanie poniżej.':'Stan odczytany z kamery.'):(result.partial?'Nie udało się odczytać możliwości kamery. Spróbuj ponownie.':'Kamera nie zgłasza obsługiwanych funkcji sterowania.');
-    refresh.textContent='Odśwież stan';if(result.message){
+    if(result.checked_at)status.textContent+=' Diagnoza: '+new Date(result.checked_at*1000).toLocaleString('pl-PL')+'.';
+    refresh.textContent='Ponów diagnozę kamery';if(result.message){
       if(!Object.keys(c).length&&model)status.textContent='Brak potwierdzonych funkcji sterowania. '+result.message;
       else status.textContent=result.message;
     }
@@ -701,7 +702,7 @@ const card=element('article',null,'camera');card.dataset.cameraId=String(camera.
     const volumeLabel=element('label','Głośność','live-volume');volumeLabel.hidden=!camera.enabled;volumeLabel.append(volume);actions.append(volumeLabel);
     volume.addEventListener('input',()=>{if(video?.video)video.video.volume=Number(volume.value);});
     const full=element('button','Pełny ekran');full.type='button';full.hidden=!camera.enabled;full.addEventListener('click',()=>{closeLiveMenu();const native=video?.video;if(document.fullscreenElement){document.exitFullscreen?.();}else if(card.requestFullscreen){card.requestFullscreen().catch(()=>{if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();else notify('Pełny ekran niedostępny.');});}else if(native?.webkitEnterFullscreen)native.webkitEnterFullscreen();});actions.append(full);
-    if(camera.enabled&&me&&me.role==='admin'){actions.append(liveLightControl(camera));const talk=element('button','Mów do kamery');talk.type='button';talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
+    if(camera.enabled&&me&&me.role==='admin'){actions.append(liveLightControl(camera));const talk=element('button','Mów do kamery');talk.type='button';talk.hidden=true;loadDeviceInfo(camera).then(result=>{talk.hidden=result.talkback!==true;},()=>{});talk.setAttribute('aria-pressed','false');talk.addEventListener('click',()=>startTalkback(camera,talk));actions.append(talk);}
     actions.append(element('p',cameraHealthText(camera),'live-health-detail'),diagnostics);card.append(actions,audioPrompt);installLiveLayoutHandles(card,camera);area.append(card);
   }
   if(!visible.length){
@@ -1189,12 +1190,16 @@ function paintNativeObjects(overlay,video,frame,tracks=null){
   if(tracks)for(const key of tracks.paths.keys())if(!seen.has(key))tracks.paths.delete(key);
   overlay.hidden=!overlay.children.length;
 }
+function combineObservations(native,motion){
+  if(!native&&!motion)return null;
+  return {stamp_ms:Math.max(native?.stamp_ms||0,motion?.stamp_ms||0),session:(native?.session||'')+'|'+(motion?.session||''),objects:[...(native?.objects||[]),...(motion?.objects||[])]};
+}
 let nativePollBusy=false;const nativeTracks=new Map();
 async function pollNativeObjects(){
   if(nativePollBusy||!me||document.hidden||$('camera-view').hidden)return;
-  nativePollBusy=true;const owner=me.id;let frames={};try{frames=(await api('/api/metadata/live')).cameras||{};}catch(error){}finally{nativePollBusy=false;}
+  nativePollBusy=true;const owner=me.id;let frames={},motion={};try{const result=await api('/api/metadata/live');frames=result.cameras||{};motion=result.motion||{};}catch(error){}finally{nativePollBusy=false;}
   if(!me||me.id!==owner||$('camera-view').hidden){nativeTracks.clear();return;}
-  const visible=new Set();for(const card of $('cameras').querySelectorAll('.camera')){const id=card.dataset.cameraId;visible.add(id);const player=card.querySelector('video-stream');if(!player?.sunhillOverlay)continue;const frame=frames[id];if(!frame)nativeTracks.delete(id);if(!nativeTracks.has(id))nativeTracks.set(id,{session:null,paths:new Map()});paintNativeObjects(player.sunhillOverlay,player.video,frame,nativeTracks.get(id));}
+  const visible=new Set();for(const card of $('cameras').querySelectorAll('.camera')){const id=card.dataset.cameraId;visible.add(id);const player=card.querySelector('video-stream');if(!player?.sunhillOverlay)continue;const frame=combineObservations(frames[id],motion[id]);if(!frame)nativeTracks.delete(id);if(!nativeTracks.has(id))nativeTracks.set(id,{session:null,paths:new Map()});paintNativeObjects(player.sunhillOverlay,player.video,frame,nativeTracks.get(id));}
   for(const id of nativeTracks.keys())if(!visible.has(id))nativeTracks.delete(id);
 }
 setInterval(pollNativeObjects,1000);
@@ -1202,10 +1207,10 @@ let nativeArchiveCache={camera:null,at:0,frames:[]},nativeArchivePending=false;
 async function drawArchiveObjects(video,instant){
   const overlay=$('archive-object-overlay');if(!overlay||!activeCamera)return;
   const cid=activeCamera.id,gen=playbackGeneration;
-  if(nativeArchiveCache.camera!==cid||Math.abs(nativeArchiveCache.at-instant)>4000){overlay.hidden=true;if(nativeArchivePending)return;nativeArchivePending=true;try{const result=await api(`/api/cameras/${cid}/metadata-history?at_ms=${Math.round(instant)}`);if(activeCamera?.id!==cid||gen!==playbackGeneration||$('archive-view').hidden)return;nativeArchiveCache={camera:cid,at:instant,frames:result.frames||[]};}catch(error){return;}finally{nativeArchivePending=false;}}
+  if(nativeArchiveCache.camera!==cid||Math.abs(nativeArchiveCache.at-instant)>4000){overlay.hidden=true;if(nativeArchivePending)return;nativeArchivePending=true;try{const result=await api(`/api/cameras/${cid}/metadata-history?at_ms=${Math.round(instant)}`);if(activeCamera?.id!==cid||gen!==playbackGeneration||$('archive-view').hidden)return;nativeArchiveCache={camera:cid,at:instant,frames:result.frames||[],motion:result.motion_frames||[]};}catch(error){return;}finally{nativeArchivePending=false;}}
   if(!me||activeCamera?.id!==cid||gen!==playbackGeneration||video!==$('archive-player')||$('archive-view').hidden||video.seeking||video.readyState<2)return;
   const record=records[recordPosition],now=record?Date.parse(record.utc_first)+video.currentTime*1000:NaN;if(!Number.isFinite(now))return;
-  const frame=nativeArchiveCache.frames.filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];paintNativeObjects(overlay,video,frame);
+  const frame=nativeArchiveCache.frames.filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];const motion=(nativeArchiveCache.motion||[]).filter(f=>Math.abs(f.stamp_ms-now)<=600).sort((a,b)=>Math.abs(a.stamp_ms-now)-Math.abs(b.stamp_ms-now))[0];paintNativeObjects(overlay,video,combineObservations(frame,motion));
 }
 function firmwareSettingsPanel(camera){
   const panel=element('details'),status=element('p'),endpoint=`/api/cameras/${camera.id}/firmware`;
@@ -1250,21 +1255,6 @@ function metadataSettingsPanel(camera){
   }catch(error){status.textContent=error.message;}finally{busy=false;}}
   panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)void load();});return panel;
 }
-let eventsPageEpoch=0,eventsCursor=null;
-async function refreshEventPage(more=false){
-  if(!me||$('events-view').hidden)return;
-  const epoch=++eventsPageEpoch,date=$('events-date').value,camera=$('events-camera').value,type=$('events-type').value;
-  if(!more){eventsCursor=null;$('events-list').replaceChildren();}
-  $('events-next').hidden=true;$('events-page-status').textContent='Wczytywanie zdarzeń…';
-  try{const query=new URLSearchParams({date});if(camera)query.set('camera',camera);if(type)query.set('type',type);if(more&&eventsCursor)query.set('cursor',eventsCursor);
-    const data=await api('/api/events?'+query.toString());if(epoch!==eventsPageEpoch||$('events-view').hidden)return;
-    for(const e of data.events){const row=element('div',null,'event-history-row');const description=element('span',`${clock(eventSeconds(e.timestamp))} · ${e.camera_name} · ${eventLabel(e.type)}`+(e.zone?' · '+e.zone:'')+(e.ended_at!=null?` · ${Math.max(0,e.ended_at-e.timestamp)} s`:''));const play=element('button','Odtwórz');play.type='button';play.addEventListener('click',async()=>{const selected=cameras.find(c=>c.id===e.camera_id);if(selected)await openArchive(selected,cameraDay(e.timestamp*1000),e);});row.append(description,play);$('events-list').append(row);}
-    eventsCursor=data.next_cursor;$('events-next').hidden=!eventsCursor;$('events-page-status').textContent=$('events-list').children.length?'':'Brak zdarzeń w wybranym zakresie.';
-  }catch(error){if(epoch===eventsPageEpoch)$('events-page-status').textContent=error.message;}
-}
-$('show-events').addEventListener('click',()=>{view('events');$('events-date').value=cameraDay();const picker=$('events-camera');picker.replaceChildren();picker.add(new Option('Wszystkie kamery',''));for(const c of cameras)picker.add(new Option(c.name,String(c.id)));picker.value='';void refreshEventPage();});
-for(const id of ['events-date','events-camera','events-type'])$(id).addEventListener('change',()=>refreshEventPage());
-$('events-refresh').addEventListener('click',()=>refreshEventPage());$('events-next').addEventListener('click',()=>refreshEventPage(true));
 $('database-refresh').addEventListener('click',async()=>{try{const d=await api('/api/settings/database');$('database-status').textContent=`SQLite ${d.journal.toUpperCase()} · ${(d.bytes/1e6).toFixed(1)} MB · WAL ${(d.wal_bytes/1e6).toFixed(1)} MB · Nagrania ${d.recordings} · Zdarzenia ${d.events} · Wolne strony ${d.free_pages}/${d.page_count}`;}catch(error){$('database-status').textContent=error.message;}});
 for(const [id,operation] of [['database-check','quick_check'],['database-optimize','optimize']])$(id).addEventListener('click',async()=>{const status=$('database-maintenance-status');$('database-check').disabled=$('database-optimize').disabled=true;status.textContent='Trwa operacja bazy…';try{const result=await api('/api/settings/database/maintenance','POST',{operation});status.textContent=result.ok?(operation==='quick_check'?'Kontrola integralności: OK.':'Optymalizacja statystyk zakończona.'):'Kontrola integralności wykazała nieprawidłowości.';}catch(error){status.textContent=error.message;}finally{$('database-check').disabled=$('database-optimize').disabled=false;}});
 function eventSettingsPanel(camera){
@@ -1364,21 +1354,15 @@ async function refreshCameraStatistics(generation){
     $('overview-disk-daily').textContent=formatStorageBytes(disk.active_bytes_24h);
     $('overview-retention').textContent=disk.forecast_ready?disk.retention_days.toFixed(1)+' dni':'Brak pełnej próbki';
     $('overview-reserve-days').textContent=disk.forecast_ready?disk.days_until_reserve.toFixed(1)+' dni':'—';
-    status.textContent='Statystyki z indeksu nagrań i okresowych prób strumieni. Bitrate to pomiar krótkiej próbki wideo; przerwy FTP mogą być normalne.';
+    status.textContent='Statystyki z indeksu nagrań i okresowych prób strumieni. Bitrate to pomiar krótkiej próbki wideo.';
   }catch(error){if(generation===adminRefreshGeneration)status.textContent='Nie udało się odczytać statystyk: '+error.message;}
 }
 async function refreshAdmin() {
   const generation=++adminRefreshGeneration;
-  const {users,accounts,cameras:adminCameras,rtsp_only:rtspOnly=false}=await api('/api/admin/inventory');
+  const {users,cameras:adminCameras}=await api('/api/admin/inventory');
   if(generation!==adminRefreshGeneration)return;
   const [ha,storage,monitoring,audit,recording]=await Promise.all([api('/api/settings/home-assistant'),api('/api/settings/storage'),api('/api/settings/monitoring'),api('/api/audit'),api('/api/settings/recording')]);
   if(generation!==adminRefreshGeneration)return;
-  $('admin-card-dodaj-15').querySelector('details').hidden=rtspOnly;
-  $('overview-ftp').parentElement.hidden=rtspOnly;
-  const ftpSelect=$('ftp-camera'),previousFtp=ftpSelect.value;
-  ftpSelect.replaceChildren(new Option('Wspólne',''));
-  for(const camera of adminCameras)ftpSelect.add(new Option(camera.name,String(camera.id)));
-  ftpSelect.value=adminCameras.some(camera=>String(camera.id)===previousFtp)?previousFtp:'';
   const usersBox=$('users');usersBox.replaceChildren();
   for(const user of users){
     const details=element('details');details.append(element('summary',user.username+' - '+user.role+(user.enabled?'':' - wyłączony')));
@@ -1401,33 +1385,18 @@ async function refreshAdmin() {
 
   $('storage-form').elements.minimum.value=storage.limits_invalid?'':storage.minimum_free/1e9;$('storage-form').elements.buffer.value=storage.limits_invalid?'':storage.free_buffer/1e9;
   $('storage-limit-status').textContent=storage.limits_invalid?'Nieprawidłowe limity dysku. Zapis i rotacja są wstrzymane. Wprowadź i zapisz poprawne wartości.':'';
-  const ftpBox=$('ftp-accounts');ftpBox.replaceChildren();const dedicatedAccounts=new Map();
-  for(const account of accounts){const details=element('details');details.append(element('summary',account.username+(account.camera_id?' - kamera '+account.camera_id:' - wspólne')+(account.enabled?'':' - wyłączone')));
-    const toggle=element('button',account.enabled?'Wyłącz':'Włącz');toggle.type='button';toggle.addEventListener('click',async()=>{try{await api(`/api/ftp-accounts/${account.id}`,'PATCH',{enabled:!account.enabled});await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(toggle);
-    const password=labeledInput('Nowe hasło FTP (min. 6 znaków)','password');password.input.minLength=6;password.input.maxLength=128;password.input.autocomplete='new-password';details.append(password.label);const save=element('button','Zmień hasło');save.type='button';save.addEventListener('click',async()=>{try{await api(`/api/ftp-accounts/${account.id}`,'PATCH',{password:password.input.value});password.input.value='';notify('Hasło FTP zmienione.');}catch(error){notify(error.message,'error');}});details.append(save);
-    const home=element('select');home.add(new Option('Wspólny katalog nagrań',''));for(const camera of adminCameras)home.add(new Option(camera.name,String(camera.id)));home.value=account.camera_id===null?'':String(account.camera_id);
-    const homeLabel=element('label','Katalog konta FTP');homeLabel.append(home);details.append(homeLabel);
-    const homeSave=element('button','Zmień katalog konta');homeSave.type='button';homeSave.addEventListener('click',async()=>{if(!window.confirm('Zmiana katalogu może wymagać zmiany ścieżki FTP w kamerach. Kontynuować?'))return;try{await api(`/api/ftp-accounts/${account.id}`,'PATCH',{camera_id:home.value?Number(home.value):null});await refreshAdmin();notify('Zapisano zmianę. Usługa FTP zastosuje ją po aktualizacji konfiguracji.');}catch(error){notify(error.message,'error');}});details.append(homeSave);
-    const remove=element('button','Usuń konto FTP');remove.type='button';remove.addEventListener('click',async()=>{if(!window.confirm('Usunąć konto FTP '+account.username+'?'))return;try{await api(`/api/ftp-accounts/${account.id}`,'DELETE');await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(remove);if(account.camera_id!==null&&adminCameras.some(c=>c.id===account.camera_id)){if(!dedicatedAccounts.has(account.camera_id))dedicatedAccounts.set(account.camera_id,[]);dedicatedAccounts.get(account.camera_id).push(details);}else ftpBox.append(details);
-  }
   const cameraBox=$('manage-cameras');cameraBox.replaceChildren();
-  for(const camera of adminCameras){const data=camera;const assigned=camera.accounts;
+  for(const camera of adminCameras){const data=camera;
     const details=element('details',null,'camera-config');details.dataset.search=(camera.name+' '+camera.slug).toLowerCase();details.dataset.cameraId=String(camera.id);const summary=element('summary',camera.name+' · '+camera.recording.toUpperCase()+(camera.enabled?'':' · wyłączona'));details.append(summary);const stats=element('span',null,'camera-statistics');stats.append(element('span','Oczekiwanie na statystyki…','camera-statistics-note'));summary.append(stats);
     const name=labeledInput('Nazwa','text',camera.name),main=labeledInput('Nowy adres RTSP główny - puste zachowuje obecny','text'),sub=labeledInput('Nowy adres RTSP pomocniczy - puste zachowuje obecny','text');details.append(name.label);const manual=element('details');manual.append(element('summary','Ręczne adresy RTSP (zaawansowane)'),main.label,sub.label);
     const cameraUser=labeledInput('Nowy użytkownik kamery - puste zachowuje dane','text'),cameraPassword=labeledInput('Nowe hasło kamery','password');cameraPassword.input.autocomplete='new-password';details.append(cameraUser.label,cameraPassword.label);
     const clear=element('input');clear.type='checkbox';const clearLabel=element('label','Usuń strumień pomocniczy','inline');clearLabel.prepend(clear);manual.append(clearLabel);details.append(manual);
     const ip=labeledInput('Adres IP do ponownego wykrycia','text');ip.input.placeholder='192.168.0.100';details.append(ip.label);
     const rediscover=element('button','Wykryj ponownie strumienie');rediscover.type='button';const discoveryStatus=element('p');discoveryStatus.setAttribute('role','status');details.append(rediscover,discoveryStatus);
-    rediscover.addEventListener('click',async()=>{if(rediscover.disabled)return;if(!ip.input.value.trim()){notify('Podaj adres IP kamery.');return;}if(!window.confirm('Wykryć ponownie i zastąpić dotychczasowe adresy strumieni? Podaj aktualne dane logowania kamery, jeśli są wymagane.'))return;rediscover.disabled=true;discoveryStatus.textContent='Wykrywanie strumieni...';try{const result=await api(`/api/cameras/${camera.id}`,'PATCH',{ip:ip.input.value.trim(),username:cameraUser.input.value,password:cameraPassword.input.value});cameraPassword.input.value='';await refreshCameras();await refreshAdmin();notify(result.sub_configured?'Zaktualizowano oba strumienie.':'Zaktualizowano strumień główny; nie wykryto pomocniczego.');}catch(error){discoveryStatus.textContent=error.message;notify(error.message,'error');}finally{rediscover.disabled=false;}});
-    const mode=element('select');for(const [value,text] of [['rtsp','RTSP'],['none','Bez zapisu'],...(data.recording==='ftp'?[['ftp','FTP (dotychczasowy tryb)']]:[])])mode.add(new Option(text,value));mode.value=data.recording;const modeLabel=element('label','Nagrywanie');modeLabel.append(mode);details.append(modeLabel);
-    const save=element('button','Zapisz kamerę');save.type='button';save.addEventListener('click',async()=>{try{const values={name:name.input.value,recording:mode.value};if(main.input.value)values.main_url=main.input.value;if(clear.checked)values.sub_url='';else if(sub.input.value)values.sub_url=sub.input.value;if(cameraUser.input.value||cameraPassword.input.value){values.username=cameraUser.input.value;values.password=cameraPassword.input.value;}await api(`/api/cameras/${camera.id}`,'PATCH',values);cameraPassword.input.value='';await refreshCameras();await refreshAdmin();notify('Kamera zapisana.');}catch(error){notify(error.message,'error');}});details.append(save);
+    rediscover.addEventListener('click',async()=>{if(rediscover.disabled)return;if(!ip.input.value.trim()){notify('Podaj adres IP kamery.');return;}if(!window.confirm('Wykryć ponownie i zastąpić dotychczasowe adresy strumieni? Podaj aktualne dane logowania kamery, jeśli są wymagane.'))return;rediscover.disabled=true;discoveryStatus.textContent='Wykrywanie strumieni...';try{const result=await api(`/api/cameras/${camera.id}`,'PATCH',{ip:ip.input.value.trim(),username:cameraUser.input.value,password:cameraPassword.input.value});cameraPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,true,true).catch(()=>{});await refreshCameras();await refreshAdmin();notify(result.sub_configured?'Zaktualizowano oba strumienie.':'Zaktualizowano strumień główny; nie wykryto pomocniczego.');}catch(error){discoveryStatus.textContent=error.message;notify(error.message,'error');}finally{rediscover.disabled=false;}});
+    const mode=element('select');for(const [value,text] of [['rtsp','RTSP'],['none','Bez zapisu']])mode.add(new Option(text,value));mode.value=data.recording;const modeLabel=element('label','Nagrywanie');modeLabel.append(mode);details.append(modeLabel);
+    const save=element('button','Zapisz kamerę');save.type='button';save.addEventListener('click',async()=>{try{const values={name:name.input.value,recording:mode.value};if(main.input.value)values.main_url=main.input.value;if(clear.checked)values.sub_url='';else if(sub.input.value)values.sub_url=sub.input.value;if(cameraUser.input.value||cameraPassword.input.value){values.username=cameraUser.input.value;values.password=cameraPassword.input.value;}await api(`/api/cameras/${camera.id}`,'PATCH',values);cameraPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,true,true).catch(()=>{});await refreshCameras();await refreshAdmin();notify('Kamera zapisana.');}catch(error){notify(error.message,'error');}});details.append(save);
     const enable=element('button',camera.enabled?'Wyłącz kamerę':'Włącz kamerę');enable.type='button';enable.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}`,'PATCH',{enabled:!camera.enabled});await refreshCameras();await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(enable);
-    if(!rtspOnly){
-    const ftpSettings=element('details',null,'camera-ftp');ftpSettings.append(element('summary','Konfiguracja FTP'));ftpSettings.open=mode.value==='ftp';const labels=element('div');const choices=[];for(const account of accounts){if(account.camera_id&&account.camera_id!==camera.id)continue;const label=element('label',account.username,'inline');const check=element('input');check.type='checkbox';check.checked=assigned.includes(account.id);label.prepend(check);labels.append(label);choices.push({id:account.id,check});}ftpSettings.append(element('p','Konta FTP - przypisanie informacyjne. Konto wspólne ma dostęp do całego katalogu nagrań, a konto kamery tylko do jej katalogu.'),labels);
-    const assign=element('button','Zapisz konta FTP');assign.type='button';assign.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}/ftp-accounts`,'POST',{accounts:choices.filter(c=>c.check.checked).map(c=>c.id)});notify('Przypisanie FTP zapisane.');}catch(error){notify(error.message,'error');}});ftpSettings.append(assign);for(const accountControl of dedicatedAccounts.get(camera.id)||[])ftpSettings.append(accountControl);
-    const ftpName=labeledInput('Nowy użytkownik FTP','text',camera.slug);const ftpPassword=labeledInput('Nowe hasło FTP','password');ftpPassword.input.autocomplete='new-password';ftpPassword.input.minLength=6;ftpPassword.input.maxLength=128;const createFtp=element('button','Utwórz konto dla tej kamery');createFtp.type='button';const ftpResult=element('p');ftpResult.setAttribute('role','status');const ftpSetup=element('details');const generate=element('button','Wygeneruj hasło');generate.type='button';generate.addEventListener('click',()=>{ftpPassword.input.type='text';ftpPassword.input.value=Array.from(crypto.getRandomValues(new Uint8Array(18)),byte=>byte.toString(16).padStart(2,'0')).join('');ftpResult.textContent='Zapisz hasło przed utworzeniem konta. Nie będzie można go odczytać później.';});ftpSetup.append(element('summary','Dodaj indywidualne konto FTP'),ftpName.label,ftpPassword.label,generate,createFtp,ftpResult);ftpSettings.append(ftpSetup);details.append(ftpSettings);mode.addEventListener('change',()=>{ftpSettings.open=mode.value==='ftp';});
-    createFtp.addEventListener('click',async()=>{if(createFtp.disabled)return;createFtp.disabled=true;try{await api('/api/ftp-accounts','POST',{username:ftpName.input.value,password:ftpPassword.input.value,camera_id:camera.id});ftpPassword.input.value='';ftpPassword.input.type='password';generate.disabled=true;ftpResult.textContent='Konto utworzone. Ustaw w kamerze adres serwera NVR, port 21, podanego użytkownika i hasło, katalog /.';createFtp.textContent='Konto utworzone';notify('Konto FTP utworzone.','success');const refresh=element('button','Odśwież konfigurację kamery');refresh.type='button';refresh.addEventListener('click',async()=>{try{await refreshAdmin();openAdminCamera(camera.id);}catch(error){notify(error.message,'error');}});ftpSetup.append(refresh);}catch(error){ftpResult.textContent=error.message;createFtp.disabled=false;}});
-    }
     const onvif=camera.onvif;const clockDetails=element('details');clockDetails.append(element('summary','Kontrola czasu ONVIF'));
     const endpoint=labeledInput('Adres usługi ONVIF','url',onvif.url),onvifUser=labeledInput('Użytkownik ONVIF','text',onvif.username),onvifPassword=labeledInput(onvif.password_configured?'Nowe hasło ONVIF - puste zachowuje obecne':'Hasło ONVIF','password');
     endpoint.input.placeholder='http://192.168.1.10/onvif/device_service';clockDetails.append(endpoint.label,onvifUser.label,onvifPassword.label);
@@ -1435,18 +1404,20 @@ async function refreshAdmin() {
     let clockStatus='Czas kamery nie został jeszcze sprawdzony.';
     if(onvif.checked!==null&&onvif.fresh===false)clockStatus='Brak aktualnego odczytu czasu ONVIF.';
     else if(onvif.error)clockStatus=onvif.error;else if(onvif.checked!==null&&onvif.offset!==null)clockStatus=`Różnica czasu: ${Number(onvif.offset).toFixed(1)} s. Sprawdzono: ${new Date(onvif.checked*1000).toLocaleString('pl-PL')}.`;
-    clockDetails.append(element('p',clockStatus));const clockSave=element('button','Zapisz ustawienia ONVIF');clockSave.type='button';clockSave.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}/onvif`,'PATCH',{url:endpoint.input.value,username:onvifUser.input.value,password:onvifPassword.input.value,auth_mode:auth.value});onvifPassword.input.value='';notify('Ustawienia ONVIF zapisane.');}catch(error){notify(error.message,'error');}});clockDetails.append(clockSave);details.append(clockDetails);
+    clockDetails.append(element('p',clockStatus));const clockSave=element('button','Zapisz ustawienia ONVIF');clockSave.type='button';clockSave.addEventListener('click',async()=>{try{await api(`/api/cameras/${camera.id}/onvif`,'PATCH',{url:endpoint.input.value,username:onvifUser.input.value,password:onvifPassword.input.value,auth_mode:auth.value});onvifPassword.input.value='';invalidateDeviceInfo(camera);void loadDeviceInfo(camera,true,true).catch(()=>{});notify('Ustawienia ONVIF zapisane.');}catch(error){notify(error.message,'error');}});clockDetails.append(clockSave);details.append(clockDetails);
     if(camera.enabled&&onvif.url){
       const reboot=element('button','Uruchom ponownie kamerę');reboot.type='button';
       reboot.addEventListener('click',async()=>{if(reboot.disabled||!window.confirm('Uruchomić ponownie kamerę '+camera.name+'? Nastąpi przerwa w obrazie i nagrywaniu.'))return;reboot.disabled=true;try{await api(`/api/cameras/${camera.id}/reboot`,'POST',{confirm:true});notify('Kamera potwierdziła polecenie restartu.','success');}catch(error){notify(error.message,'error');}finally{reboot.disabled=false;}});
       const capabilities=element('button','Sprawdź usługi i profile ONVIF');capabilities.type='button';const capabilityStatus=element('p');
       capabilities.onclick=async()=>{capabilities.disabled=true;try{const data=await api(`/api/cameras/${camera.id}/onvif-capabilities`);capabilityStatus.textContent=[data.media1?'Media1':null,data.media2?'Media2':null,data.analytics?'Analytics':null,data.events?'Events':null].filter(Boolean).join(' · ')||'Brak rozpoznanych usług.';for(const profile of data.profiles){capabilityStatus.append(element('div',`${profile.encoding} ${profile.width}×${profile.height} · metadane: ${profile.metadata?'tak':'nie'} · audio wejście: ${profile.audio_input?'tak':'nie'} · audio wyjście: ${profile.audio_output&&profile.audio_decoder?'tak':'nie'}`));}if(data.media2_error)capabilityStatus.append(element('div','Media2 zgłoszony, odczyt profili nieudany.'));}catch(error){capabilityStatus.textContent=error.message;}finally{capabilities.disabled=false;}};
-      details.append(reboot,capabilities,capabilityStatus,firmwareSettingsPanel(camera));
+      const firmware=firmwareSettingsPanel(camera);reboot.hidden=true;firmware.hidden=true;
+      details.addEventListener('toggle',()=>{if(details.open)loadDeviceInfo(camera).then(result=>{reboot.hidden=result.reboot!==true;firmware.hidden=result.firmware_upgrade!==true;},()=>{});});
+      details.append(reboot,capabilities,capabilityStatus,firmware);
     }
     if(camera.enabled)details.append(deviceControlPanel(camera));details.append(eventSettingsPanel(camera),metadataSettingsPanel(camera));
     const remove=element('button','Usuń kamerę z konfiguracji');remove.type='button';remove.addEventListener('click',async()=>{if(!window.confirm('Usunąć kamerę z konfiguracji? Pliki nagrań pozostaną na dysku.'))return;try{await api(`/api/cameras/${camera.id}`,'DELETE');await refreshCameras();await refreshAdmin();}catch(error){notify(error.message,'error');}});details.append(remove);cameraBox.append(details);
   }
-  $('overview-cameras').textContent=adminCameras.filter(c=>c.enabled).length+' / '+adminCameras.length;$('overview-rtsp').textContent=String(adminCameras.filter(c=>c.enabled&&c.recording==='rtsp').length);$('overview-ftp').textContent=String(adminCameras.filter(c=>c.enabled&&c.recording==='ftp').length);filterAdminCameras();
+  $('overview-cameras').textContent=adminCameras.filter(c=>c.enabled).length+' / '+adminCameras.length;$('overview-rtsp').textContent=String(adminCameras.filter(c=>c.enabled&&c.recording==='rtsp').length);filterAdminCameras();
   void refreshCameraStatistics(generation);
   const events=audit.events;$('audit').replaceChildren();for(const event of events)$('audit').append(element('p',new Date(event.timestamp*1000).toLocaleString()+' | '+event.user_id+' | '+event.action+' | '+event.object_type+' '+event.object_id));
   const results=await Promise.allSettled([refreshDomain(),refreshTLS(),refreshRotation(),refreshServices(),refreshUpgradeStatus()]);
@@ -1476,8 +1447,8 @@ async function refreshUserContext(){
 
 async function start() {
   try {me=await api('/api/me');}
-  catch(error) {me=null;$('signed-in-user').textContent='';$('login-panel').hidden=false;$('application').hidden=true;$('app-nav').hidden=true;$('brand-live').disabled=true;$('logout').hidden=true;if(error.status!==401)notify(error.message,'error');try{$('setup-panel').hidden=!(await api('/api/setup')).available;}catch{$('setup-panel').hidden=true;}return;}
-  $('login-panel').hidden=true;$('application').hidden=false;$('app-nav').hidden=false;$('brand-live').disabled=false;$('logout').hidden=false;$('show-admin').hidden=me.role!=='admin';$('signed-in-user').textContent=me.username+' - '+(me.role==='admin'?'administrator':'użytkownik');view('cameras');
+  catch(error) {me=null;$('signed-in-user').textContent='';$('login-panel').hidden=false;$('application').hidden=true;$('app-nav').hidden=true;$('brand-live').disabled=true;$('signed-in-user').hidden=true;$('account-options').hidden=true;if(error.status!==401)notify(error.message,'error');try{$('setup-panel').hidden=!(await api('/api/setup')).available;}catch{$('setup-panel').hidden=true;}return;}
+  $('login-panel').hidden=true;$('application').hidden=false;$('app-nav').hidden=false;$('brand-live').disabled=false;$('signed-in-user').hidden=false;$('show-admin').hidden=me.role!=='admin';$('signed-in-user').textContent=me.username+' - '+(me.role==='admin'?'administrator':'użytkownik');view('cameras');
   renderCameras();
   try{await refreshCameras();}catch(error){if(cameraListState!=='ready'){cameraListState='error';renderCameras();}notify('Nie udało się wczytać pełnego widoku: '+error.message);}
 }
@@ -1488,6 +1459,10 @@ $('setup-form').addEventListener('submit',async(event)=>{event.preventDefault();
   try{await api('/api/setup','POST',{token:value.token,username:value.username,password:value.password});event.target.reset();$('setup-panel').hidden=true;notify('Administrator utworzony. Możesz się zalogować.');}
   catch(error){notify(error.message,'error');}
 });
+function closeAccountMenu(){ $('account-options').hidden=true;$('signed-in-user').setAttribute('aria-expanded','false'); }
+$('signed-in-user').addEventListener('click',()=>{const open=$('account-options').hidden;$('account-options').hidden=!open;$('signed-in-user').setAttribute('aria-expanded',String(open));});
+if(typeof document.addEventListener==='function'){document.addEventListener('pointerdown',event=>{if(!$('account-menu').contains(event.target))closeAccountMenu();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('account-options').hidden){closeAccountMenu();$('signed-in-user').focus();}});}
 $('logout').addEventListener('click',async()=>{stopTalkback();try{await flushLiveWorkspace();await api('/api/logout','POST',{});location.reload();}catch(e){notify(e.message);}});
 $('own-password-form').addEventListener('submit',async(event)=>{
   event.preventDefault();const form=event.target;
@@ -1571,7 +1546,7 @@ $('archive-camera-select').addEventListener('change',async()=>{const camera=came
 function enterLive(){if(!me)return;notify('');view('cameras');}
 $('show-cameras').addEventListener('click',enterLive);
 $('brand-live').addEventListener('click',enterLive);
-$('show-settings').addEventListener('click',()=>{notify('');view('settings');refreshExports();});
+$('show-settings').addEventListener('click',()=>{closeAccountMenu();notify('');view('settings');refreshExports();});
 $('back-cameras').addEventListener('click',()=>{ $('archive-player').pause();view('cameras');});
 $('show-sync').addEventListener('click',openSync);
 $('show-admin').addEventListener('click',async()=>{try{if(!me||me.role!=='admin')return;view('admin');selectAdminSection('overview');await refreshAdmin();}catch(e){notify(e.message);}});
@@ -1624,10 +1599,9 @@ async function seekArchive(delta){
   if(records[index].id===record.id&&player.currentSrc&&!archiveSwitch)player.currentTime=offset;else playRecord(index,offset,false,paused);
 }
 for(const button of document.querySelectorAll('[data-seek]'))button.addEventListener('click',()=>{seekArchive(Number(button.dataset.seek)).catch(error=>notify(error.message,'error'));});
-$('camera-form').addEventListener('submit',async(event)=>{event.preventDefault();const button=$('camera-discover-submit'),status=$('camera-discover-status');if(button.disabled)return;button.disabled=true;status.textContent='Wykrywanie strumieni wideo...';try{const result=await api('/api/cameras','POST',formData(event.target));event.target.reset();status.textContent=result.sub_configured?'Wykryto strumień główny i pomocniczy.':'Kamera dodana ze strumieniem głównym (brak potwierdzonego pomocniczego).';await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){status.textContent=e.message;notify(e.message);}finally{button.disabled=false;}});
-$('camera-manual-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const result=await api('/api/cameras','POST',formData(event.target));event.target.reset();await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){notify(e.message);}});
+$('camera-form').addEventListener('submit',async(event)=>{event.preventDefault();const button=$('camera-discover-submit'),status=$('camera-discover-status');if(button.disabled)return;button.disabled=true;status.textContent='Wykrywanie strumieni wideo...';try{const result=await api('/api/cameras','POST',formData(event.target));void api(`/api/cameras/${result.id}/settings?refresh=1`).catch(()=>{});event.target.reset();status.textContent=result.sub_configured?'Wykryto strumień główny i pomocniczy.':'Kamera dodana ze strumieniem głównym (brak potwierdzonego pomocniczego).';await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){status.textContent=e.message;notify(e.message);}finally{button.disabled=false;}});
+$('camera-manual-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const result=await api('/api/cameras','POST',formData(event.target));void api(`/api/cameras/${result.id}/settings?refresh=1`).catch(()=>{});event.target.reset();await Promise.all([refreshCameras(),refreshAdmin()]);openAdminCamera(result.id);notify('Kamera dodana.');}catch(e){notify(e.message);}});
 $('user-form').addEventListener('submit',async(event)=>{event.preventDefault();try{await api('/api/users','POST',formData(event.target));event.target.reset();await refreshAdmin();notify('Użytkownik dodany.');}catch(e){notify(e.message);}});
-$('ftp-form').addEventListener('submit',async(event)=>{event.preventDefault();try{const data=formData(event.target);data.camera_id=data.camera_id?Number(data.camera_id):null;await api('/api/ftp-accounts','POST',data);event.target.reset();await refreshAdmin();notify('Konto FTP dodane do konfiguracji.');}catch(e){notify(e.message);}});
 async function refreshUpgradeStatus(){
   const value=await api('/api/updates');const status=value.status;
   $('upgrade-status').textContent='Wersja '+(value.version||'')+' | '+(value.pending?'Aktualizacja oczekuje na uruchomienie.':status.message||'Brak oczekującej aktualizacji.');

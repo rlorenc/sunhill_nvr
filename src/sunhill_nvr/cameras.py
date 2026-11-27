@@ -18,7 +18,7 @@ class Camera:
     name: str
     main_url: str=field(repr=False)
     sub_url: str | None=field(default=None,repr=False)
-    recording: str='ftp'
+    recording: str='rtsp'
     enabled: bool=True
 
 def validate_rtsp(url: str) -> None:
@@ -50,7 +50,7 @@ def validate(camera: Camera) -> None:
         raise ValueError('invalid camera name')
     if any(ord(c)<32 for c in camera.name):
         raise ValueError('invalid camera name')
-    if not isinstance(camera.recording,str) or camera.recording not in ('ftp','rtsp','none'):
+    if not isinstance(camera.recording,str) or camera.recording not in ('rtsp','none'):
         raise ValueError('invalid recording mode')
     validate_rtsp(camera.main_url)
     if camera.sub_url is not None:
