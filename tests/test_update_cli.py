@@ -21,6 +21,15 @@ class UpdateCLI(unittest.TestCase):
         self.archive=self.base/'sunhill-nvr-0.2.13.tar.gz';self.archive.touch()
         self.inbox_trust=patch.object(u,'trusted_inbox');self.inbox_trust.start();self.addCleanup(self.inbox_trust.stop)
         self.trust=patch.object(u,'trusted_package',side_effect=lambda p:p);self.trust.start();self.addCleanup(self.trust.stop)
+    def test_rollback_cli_requires_explicit_confirmation(self):
+        run=Mock(return_value=subprocess.CompletedProcess([],0))
+        with patch.object(u.sys.stdin,'isatty',return_value=False):
+            with self.assertRaises(ValueError):u.restore_cli(self.root,['--rollback'],run=run)
+        run.assert_not_called()
+        self.assertEqual(u.restore_cli(self.root,['--downgrade','1.0.2','--yes'],run=run),0)
+        self.assertEqual(run.call_args.args[0][-3:],['rollback','1.0.2','--yes'])
+        self.assertEqual(u.restore_cli(self.root,['--rollback-history'],run=run),0)
+        self.assertEqual(run.call_args.args[0][-1],'rollback-history')
     def test_sibling_and_explicit(self):
         self.assertEqual(u.discover(self.source,self.root,'0.2.12'),self.archive)
         for explicit in (None,str(self.archive)):

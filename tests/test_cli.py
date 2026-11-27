@@ -65,6 +65,19 @@ class CLITests(unittest.TestCase):
         self.assertFalse(enroll.call_args.kwargs['allow_rootfs'])
         self.assertEqual(main(['enroll-storage','--allow-rootfs']),0)
         self.assertTrue(enroll.call_args.kwargs['allow_rootfs'])
+ def test_analytics_model_status_cli_exit_and_root(self):
+    from sunhill_nvr.cli import main
+    from unittest.mock import Mock
+    from contextlib import redirect_stdout
+    from io import StringIO
+    with patch('sunhill_nvr.cli.load',return_value=Mock()),patch('sunhill_nvr.cli.os.geteuid',return_value=0),patch('sunhill_nvr.analytics_models.status',return_value={'coco':{'state':'missing'}}) as status,redirect_stdout(StringIO()) as output:
+        self.assertEqual(main(['analytics-model-status']),0);status.assert_called_with(verify=False)
+        self.assertEqual(main(['analytics-model-status','--verify']),1);status.assert_called_with(verify=True)
+        status.return_value={'coco':{'state':'present','inference':'passed'}}
+        self.assertEqual(main(['analytics-model-status','--verify']),0)
+        self.assertIn('missing',output.getvalue())
+    with patch('sunhill_nvr.cli.load',return_value=Mock()),patch('sunhill_nvr.cli.os.geteuid',return_value=1000):
+        with self.assertRaises(ValueError):main(['analytics-model-status'])
  def test_long_worker_sleep_stops_promptly_on_sigterm(self):
     import os,subprocess,sys
     program='''import signal\nfrom sunhill_nvr.cli import sleep_interruptibly\nstopping=[False]\nsignal.signal(signal.SIGTERM,lambda signum,frame:stopping.__setitem__(0,True))\nprint("ready",flush=True)\nsleep_interruptibly(900,stopping)\nprint("stopped",flush=True)\n'''

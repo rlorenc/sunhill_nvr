@@ -112,11 +112,11 @@ async def _header(reader: asyncio.StreamReader) -> bytes:
     if len(data)>MAX_HEADER:raise ValueError('header too large')
     return data
 
-def _parse_request(raw: bytes, origin: str) -> tuple[str,str,str]:
+def _parse_request(raw: bytes, origin: str, *, path='/api/ws') -> tuple[str,str,str]:
     lines=raw.decode('ascii').split('\r\n');parts=lines[0].split(' ')
     if len(parts)!=3 or parts[0]!='GET' or parts[2]!='HTTP/1.1':raise ValueError('invalid request')
     parsed=urlsplit(parts[1]);params=parse_qs(parsed.query,keep_blank_values=True)
-    if parsed.path!='/api/ws' or parsed.netloc or parsed.scheme or parsed.fragment or set(params)!={'src'} or len(params['src'])!=1:
+    if parsed.path!=path or parsed.netloc or parsed.scheme or parsed.fragment or set(params)!={'src'} or len(params['src'])!=1:
         raise ValueError('invalid stream')
     alias=params['src'][0]
     if not re.fullmatch(r'~?[a-z0-9][a-z0-9_-]{0,67}',alias):raise ValueError('invalid stream')
@@ -203,7 +203,12 @@ async def serve(cfg) -> None:
     async def accept(reader,writer):
         await handle(reader,writer,origin=cfg.origin,authorize_fn=lambda token,alias:authorize_stream(cfg.database,cfg.control_state,token,alias),semaphore=semaphore)
     server=await asyncio.start_server(accept,'127.0.0.1',1985,limit=MAX_HEADER,backlog=64)
-    async with server:await server.serve_forever()
+    from . import talkback
+    talk_semaphore=asyncio.Semaphore(4);active_talk=set()
+    async def accept_talk(reader,writer):
+        await talkback.handle(reader,writer,origin=cfg.origin,authorize_fn=lambda token,slug:talkback.authorize(cfg.database,token,slug),active=active_talk,semaphore=talk_semaphore)
+    talk_server=await asyncio.start_server(accept_talk,'127.0.0.1',1986,limit=MAX_HEADER,backlog=8)
+    async with server,talk_server:await asyncio.gather(server.serve_forever(),talk_server.serve_forever())
 
 def main() -> int:
     cfg=load(Path(os.environ.get('SUNHILL_CONFIG','/opt/sunhill-nvr/config/config.json')))

@@ -61,11 +61,23 @@ fi
 [[ $(sudo stat -c %a "$root") == 755 ]]
 sudo -u sunhill test -w "$root/media/kamery"
 sudo -u sunhill test -r "$root/data/sunhill.sqlite"
-sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
-pid=$(systemctl show -p MainPID --value sunhill-ftp.service)
-[[ $pid =~ ^[1-9][0-9]*$ ]]
-[[ $(sudo cat "/proc/$pid/attr/apparmor/current") == 'proftpd (enforce)' ]]
-sudo env PYTHONPATH="$root/current/app" /usr/bin/python3 -m sunhill_nvr.install_health "$host"
+if [[ $mode == resume ]]; then
+    sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
+    pid=$(systemctl show -p MainPID --value sunhill-ftp.service)
+    [[ $pid =~ ^[1-9][0-9]*$ ]]
+    [[ $(sudo cat "/proc/$pid/attr/apparmor/current") == 'proftpd (enforce)' ]]
+    sudo env PYTHONPATH="$root/current/app" /usr/bin/python3 -m sunhill_nvr.install_health "$host"
+else
+    ! systemctl is-active --quiet sunhill-ftp.service
+    [[ ! -e /etc/systemd/system/sunhill-ftp.service && ! -e /etc/systemd/system/sunhill-ftp-policy.service ]]
+    sudo env PYTHONPATH="$root/current/app" /usr/bin/python3 -m sunhill_nvr.install_health "$host" --rtsp-only
+    sudo -u sunhill /usr/bin/python3 - "$root/data/sunhill.sqlite" <<'PYRTSP'
+import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as db:
+    assert db.execute("SELECT value FROM system_settings WHERE key='recording_transport'").fetchone()==('rtsp-only',)
+    assert db.execute('SELECT COUNT(*) FROM ftp_accounts').fetchone()==(0,)
+PYRTSP
+fi
 # Check the port 80 vhost even when the Ubuntu welcome site is enabled.
 /usr/bin/python3 - "$host" <<'PYCODE'
 import sys
@@ -81,6 +93,7 @@ for host,status in [('127.0.0.1',200),(canonical,301)]:
         response.read()
     finally:conn.close()
 PYCODE
+if [[ $mode == resume ]]; then
 /usr/bin/python3 - <<'PY'
 import ftplib
 with ftplib.FTP() as ftp:
@@ -90,6 +103,7 @@ with ftplib.FTP() as ftp:
     except ftplib.error_perm:pass
     else:raise SystemExit('Unknown FTP account accepted')
 PY
+fi
 if [[ $mode == clean ]]; then
     # Prove setup works from the same installed LAN origin a user can open.
     # Do not print the token, password, session cookie, or response body.

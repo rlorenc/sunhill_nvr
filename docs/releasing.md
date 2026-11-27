@@ -1,5 +1,7 @@
 # Wydania od 0.2.0
 
+
+**Kandydat 1.1.0:** nowa instalacja domyślnie RTSP-only; migracja starszej instalacji wymaga jawnego `bash install.sh --update --rtsp-only` po odbiorze na kopii. Bez flagi pozostaje wariant zgodności. Nie odinstalowuj ProFTPD ani nie modyfikuj recovery ręcznie. Zobacz [warunki odbioru 1.1.0](analytics-1.1.0.md). Bramka CI nadal obowiązkowa; dodatkowo wymaga zadania `rtsp-migration`.
 ## Aktualizacja bieżących instalacji (od 0.3.12)
 
 Standardowo uruchom `bash install.sh --update` z rozpakowanego nowszego wydania. Nie używaj opcji naprawczych do sprawnej instalacji. W razie niedokończonego rollbacku zachowaj logi i kopie; specjalna opcja `--update --repair` została wprowadzona w 0.3.12 dla terminalnego rollbacku. Administrator potwierdził jej skuteczne wykonanie przy przejściu z 0.3.9 do 0.3.12. Szczegóły warunków i zakresu w STATUS.md oraz HANDOVER.md. Stare instrukcje README (0.3.3 i wcześniejsze) pozostają w historii: `git show d56687c:README.md`.

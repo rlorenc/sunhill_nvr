@@ -1,4 +1,5 @@
 """Chromium test of the real live renderer/CSS with synthetic go2rtc elements."""
+import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 root=Path(__file__).resolve().parents[1]/'src/sunhill_nvr/static'
@@ -7,7 +8,7 @@ layout=js[js.index('let liveLayoutEditing='):js.index('function livePlayerReady'
 health=js[js.index('function cameraHealthText'):js.index('function view(')]
 renderer=js[js.index('function liveDiagnostics'):js.index('async function openArchive')]
 with sync_playwright() as p:
-    browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    browser=p.chromium.launch(executable_path=os.environ.get('SUNHILL_BROWSER_EXECUTABLE','/usr/bin/chromium'),headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
     page=browser.new_page(viewport={'width':1593,'height':960})
     page.set_content('<style>'+css+'</style><main id="camera-view"><button id="edit-live-layout">Edytuj</button><button id="reset-live-layout" hidden>Reset</button><p id="live-layout-help" hidden>Edytuj</p><select id="layout-select"></select><span id="camera-count"></span><div id="cameras" class="grid"></div></main>')
     page.evaluate('''() => {window.me={role:'admin'};window.cameras=Array.from({length:11},(_,i)=>({id:i+1,name:'Kamera '+(i+1),slug:'cam'+(i+1),enabled:true,sub_configured:true,health:'recording',stream_health:'available'}));window.layouts=[];window.cameraListState='ready';window.livePreferences=new Map();window.$=id=>document.getElementById(id);window.element=(tag,text,cls)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(cls)node.className=cls;return node;};window.ensureLivePlayer=()=>{};window.livePlayerReady=()=>true;window.disconnects=0;window.openArchive=c=>{window.archived=c.id;};window.notify=()=>{};window.controlCalls=[];window.controlState={light:false,zoom:{value:3,min:0,max:28}};window.api=async(url,method='GET',data=null)=>{window.controlCalls.push({url,method,data});if(method==='POST'){if(data.control==='light')window.controlState.light=data.value;if(data.control==='zoom')window.controlState.zoom.value=data.value;return {ok:true};}return {controls:window.controlState,settings:url.endsWith('/settings')?[{key:'motion_detection',type:'bool',value:true,label:'Detekcja ruchu',group:'Detekcja'}]:[],partial:false,device:{manufacturer:'Reolink',model:'Lumus',protocol:'Baichuan TCP 9000'}};};customElements.define('video-stream',class extends HTMLElement{connectedCallback(){if(!this.video){this.video=document.createElement('video');this.video.controls=true;this.video.play=()=>Promise.resolve();this.append(this.video);const info=document.createElement('div');info.className='info';info.innerHTML='<div class="status"></div><div class="mode">MSE</div>';this.append(info);this.video.dispatchEvent(new Event('loadedmetadata'));}}disconnectedCallback(){window.disconnects++;}});}''')
@@ -27,6 +28,15 @@ with sync_playwright() as p:
     page.evaluate('document.querySelector("video-stream").video.controls=true')
     page.wait_for_function('!document.querySelector("video-stream").video.controls')
     b=first.bounding_box();v=first.locator('video-stream').bounding_box();assert b['height']-v['height']<=40
+    # Digital zoom must preserve the existing stream and keep the overlay aligned.
+    player=first.locator('video-stream');bzoom=player.bounding_box();cx=bzoom['x']+bzoom['width']/2;cy=bzoom['y']+bzoom['height']/2
+    page.mouse.move(cx,cy);page.mouse.wheel(0,-200)
+    page.wait_for_function('document.querySelector("video-stream").video.style.transform.includes("scale(1.25)")')
+    before=player.locator('video').evaluate('(e)=>e.style.transform');page.mouse.move(cx,cy);page.mouse.down();page.mouse.move(cx+25,cy+15,steps=5);page.mouse.up()
+    after=player.locator('video').evaluate('(e)=>e.style.transform');assert before!=after
+    assert player.locator('.native-object-overlay').evaluate('(e)=>e.style.transform')==after
+    page.mouse.wheel(0,200);page.wait_for_function('!document.querySelector("video-stream").video.style.transform')
+    page.wait_for_timeout(550)
     # Real double clicks on video enlarge and restore without reconnecting.
     original=first.bounding_box();page.evaluate('window.originalPlayer=document.querySelector("video-stream")')
     first.locator('video').dblclick();assert first.evaluate('(e)=>e.classList.contains("expanded")') and first.bounding_box()['width']>original['width']

@@ -10,9 +10,17 @@ if [[ "${1:-}" == --resume ]]; then
     exec bash "$source_dir/scripts/resume_0_2_1.sh"
 fi
 check_only=0
+# Legacy mode is reserved for isolated compatibility tests and recovery.
+legacy_ftp=${SUNHILL_LEGACY_FTP:-0}
+[[ "$legacy_ftp" == 0 || "$legacy_ftp" == 1 ]] || { echo "Invalid SUNHILL_LEGACY_FTP" >&2; exit 1; }
 retry_incomplete=0
 if [[ "${1:-}" == --check ]]; then check_only=1; shift; fi
 if [[ "${1:-}" == --retry-incomplete ]]; then retry_incomplete=1; shift; fi
+if [[ "${1:-}" == --rollback || "${1:-}" == --downgrade || "${1:-}" == --rollback-history ]]; then
+    if (( check_only || retry_incomplete )); then echo 'Invalid rollback flags' >&2; exit 1; fi
+    source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+    exec /usr/bin/python3 -u "$source_dir/scripts/update_cli.py" "$@"
+fi
 if [[ $# -gt 4 || $# -eq 3 ]]; then printf 'Usage: %s [--check|--retry-incomplete] [HOSTNAME [STORAGE_MOUNT [TLS_FULLCHAIN TLS_KEY]]|--update [RELEASE.tar.gz]]\n' "$0" >&2; exit 1; fi
 if [[ "${1:-}" == --update ]]; then
     if (( check_only || retry_incomplete )) || [[ $# -gt 2 ]]; then printf 'Usage: %s --update [RELEASE.tar.gz]\n' "$0" >&2; exit 1; fi
@@ -97,7 +105,7 @@ fi
 if ! command -v systemctl >/dev/null; then
     printf '%s\n' 'systemctl is required.' >&2; exit 1
 fi
-PYTHONPATH="$source_dir/src" /usr/bin/python3 - "$host" "$storage_probe" "$tls_cert" "$local_tls" <<'PY'
+PYTHONPATH="$source_dir/src" /usr/bin/python3 - "$host" "$storage_probe" "$tls_cert" "$local_tls" "$legacy_ftp" <<'PY'
 import sys
 from sunhill_nvr.nginx_config import HOST
 from sunhill_nvr import mount,proc_scan,install_preflight
@@ -110,13 +118,11 @@ try:proc_scan.require_proc_visibility()
 except proc_scan.IncompleteScan as exc:raise SystemExit(str(exc))
 try:install_preflight.require_systemd_operational()
 except ValueError as exc:raise SystemExit(str(exc))
-try:install_preflight.require_ports_free(lan_tls=bool(sys.argv[3]) or sys.argv[4]=='1')
+try:install_preflight.require_ports_free(lan_tls=bool(sys.argv[3]) or sys.argv[4]=='1',rtsp_only=sys.argv[5]=='0')
 except (ValueError,OSError) as exc:raise SystemExit(str(exc))
 PY
-if (( retry_incomplete )); then
-    validate_inactive_proftpd
-else
-    refuse_existing_proftpd
+if [[ "$legacy_ftp" == 1 ]]; then
+    if (( retry_incomplete )); then validate_inactive_proftpd; else refuse_existing_proftpd; fi
 fi
 tmp=$(mktemp -d /tmp/sunhill-install.XXXXXXXX)
 identity_created=0
@@ -127,7 +133,7 @@ uid=''
 gid=''
 cleanup_install() {
     local status=$?
-    cleanup_failed_package_install "$status" "$package_install_started" "$distribution_proftpd_disabled" || true
+    if [[ "$legacy_ftp" == 1 ]]; then cleanup_failed_package_install "$status" "$package_install_started" "$distribution_proftpd_disabled" || true; fi
     if (( status != 0 && installation_started == 1 )); then
         # Stop only units created by this attempt. Do not remove archive files,
         # account data or the recovery unit required by an existing Nginx.
@@ -176,12 +182,12 @@ fi
 
 # Render and validate configuration and unit targets before package changes.
 mkdir "$tmp/generated"
-PYTHONPATH="$source_dir/src" /usr/bin/python3 - "$host" "$storage" "$tmp" "$tls_cert" <<'PYCODE'
+PYTHONPATH="$source_dir/src" /usr/bin/python3 - "$host" "$storage" "$tmp" "$tls_cert" "$legacy_ftp" <<'PYCODE'
 import json,sys
 from pathlib import Path
 from sunhill_nvr.config import parse
 from sunhill_nvr.deployment import generate,preflight_unit_targets
-host,storage,directory,certificate=sys.argv[1:]
+host,storage,directory,certificate,legacy_ftp=sys.argv[1:]
 raw={'hostname':host,'database':'/opt/sunhill-nvr/data/sunhill.sqlite',
      'archive':storage+'/kamery','staging':storage+'/.sunhill-staging',
      'exports':storage+'/.sunhill-exports','archive_lock':'/opt/sunhill-nvr/data/archive.lock',
@@ -190,7 +196,7 @@ raw={'hostname':host,'database':'/opt/sunhill-nvr/data/sunhill.sqlite',
 config=parse(raw);root=Path(directory)
 (root/'config.json').write_text(json.dumps(raw,indent=2)+'\n',encoding='utf-8')
 options={'tls_certificate':Path('/opt/sunhill-nvr/config/tls/current/fullchain.pem'),'tls_key':Path('/opt/sunhill-nvr/config/tls/current/key.pem')} if certificate else {}
-generate(config,root/'generated',**options)
+generate(config,root/'generated',rtsp_only=legacy_ftp=='0',**options)
 preflight_unit_targets(root/'generated'/'units',Path('/etc/systemd/system'))
 PYCODE
 
@@ -244,13 +250,16 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 package_install_started=1
-apt-get install -y python3 gunicorn ffmpeg openssl nginx proftpd-core curl util-linux tzdata ca-certificates
-# Package installation may auto-start the distribution's ProFTPD daemon on
-# port 21. Only the isolated Sunhill service should own this port.
-disable_distribution_proftpd
-distribution_proftpd_disabled=1
+packages=(python3 gunicorn ffmpeg openssl nginx curl util-linux tzdata ca-certificates python3-opencv opencv-data tesseract-ocr tesseract-ocr-eng)
+if [[ "$legacy_ftp" == 1 ]]; then packages+=(proftpd-core); fi
+apt-get install -y "${packages[@]}"
+if [[ "$legacy_ftp" == 1 ]]; then
+    disable_distribution_proftpd
+    distribution_proftpd_disabled=1
+    validate_executable_dependencies /usr/sbin/proftpd
+fi
 validate_executable_dependencies /usr/bin/python3 /usr/bin/gunicorn /usr/bin/ffmpeg /usr/bin/ffprobe \
-    /usr/bin/openssl /usr/sbin/nginx /usr/sbin/proftpd /usr/bin/findmnt /usr/bin/systemctl \
+    /usr/bin/openssl /usr/sbin/nginx /usr/bin/findmnt /usr/bin/systemctl \
     /usr/bin/systemd-analyze /usr/sbin/runuser
 if ! /usr/bin/python3 -c 'import gunicorn' >/dev/null 2>&1; then
     printf '%s\n' 'Gunicorn cannot be imported by the system Python.' >&2; exit 1
@@ -325,6 +334,9 @@ if [[ "${SUNHILL_INSTALL_CONSOLE_ADMIN:-}" == 1 ]]; then
 else
     setup_token=$(runuser -u sunhill -- env PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.cli init-setup)
 fi
+if [[ "$legacy_ftp" == 0 ]]; then
+    runuser -u sunhill -- env PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.cli migrate --rtsp-only
+fi
 runuser -u sunhill -- env PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.cli enroll-storage "${enroll_options[@]}"
 for file in "$tmp"/generated/units/*; do
     target="/etc/systemd/system/$(basename "$file")"
@@ -346,7 +358,9 @@ install -d -o root -g root -m 0755 /etc/systemd/system/nginx.service.d
 printf '%s\n' '[Unit]' 'Requires=sunhill-upgrade-recover.service' 'After=sunhill-upgrade-recover.service' > "$tmp/sunhill-recovery.conf"
 install -o root -g root -m 0644 "$tmp/sunhill-recovery.conf" /etc/systemd/system/nginx.service.d/sunhill-recovery.conf
 nginx -t
-PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.apparmor_ftp /opt/sunhill-nvr/config/config.json
+if [[ "$legacy_ftp" == 1 ]]; then
+    PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.apparmor_ftp /opt/sunhill-nvr/config/config.json
+fi
 # Validate exactly the paths and account used by the boot recovery manager
 # before queuing systemd jobs. On a clean install no recovery journal exists.
 PYTHONPATH=/opt/sunhill-nvr/recovery/app /usr/bin/python3 -c 'from sunhill_nvr.upgrade_admin import context; context()'
@@ -357,7 +371,9 @@ systemctl enable --now sunhill-activity.service sunhill-web.service sunhill-live
     sunhill-controller.timer sunhill-upgrade-ready.service sunhill-upgrade-apply.timer
 systemctl enable --now nginx
 systemctl reload nginx
-PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.install_health "$host"
+health_options=()
+if [[ "$legacy_ftp" == 0 ]]; then health_options+=(--rtsp-only); fi
+PYTHONPATH=/opt/sunhill-nvr/current/app /usr/bin/python3 -m sunhill_nvr.install_health "$host" "${health_options[@]}"
 /usr/bin/python3 -u "$source_dir/scripts/update_cli.py" --access
 printf 'Sunhill NVR %s installed.\n' "$version"
 printf '%s\n' 'Cloudflare Tunnel origin: http://127.0.0.1:8080'

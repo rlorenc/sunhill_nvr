@@ -7,14 +7,14 @@ from .units import render as render_units
 from . import lifecycle
 import json
 
-def generate(config: Config, output: Path, *, tls_certificate: Path | None=None, tls_key: Path | None=None) -> None:
+def generate(config: Config, output: Path, *, tls_certificate: Path | None=None, tls_key: Path | None=None, rtsp_only: bool=False) -> None:
     if output.is_symlink() or not output.is_dir():raise ValueError('invalid output directory')
     units=output/'units';units.mkdir(mode=0o750,exist_ok=False)
-    rendered=render_units(config)
+    rendered=render_units(config,rtsp_only=rtsp_only)
     for name,content in rendered.items():
         with (units/name).open('x',encoding='utf-8') as f:f.write(content)
     with (output/'nginx.conf').open('x',encoding='utf-8') as f:f.write(render_nginx(config.hostname,tls_certificate=tls_certificate,tls_key=tls_key))
-    manifest=lifecycle.validate(lifecycle.default(),set(rendered))
+    manifest=lifecycle.validate(lifecycle.default(rtsp_only=rtsp_only),set(rendered))
     with (output/'lifecycle.json').open('x',encoding='utf-8') as f:json.dump(manifest,f,separators=(',',':'))
 
 

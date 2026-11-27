@@ -141,9 +141,13 @@ def discover(ip,username='',password=''):
         for port in (80,8000):
             for mode in ('digest','wsse') if username else ('digest',):
                 try:result=profiles(ip,username,password,mode,port)
-                except (OSError,ValueError,ET.ParseError):continue
+                except (OSError,ValueError,ET.ParseError):
+                    try:
+                        from .onvif_capabilities import streams
+                        result=streams((f'rtsp://{ip}/',f'http://{ip}:{port}/onvif/device_service',username,password,mode))
+                    except (OSError,ValueError,ET.ParseError):continue
                 main=pool.submit(probe,result.main);sub=pool.submit(probe,result.sub) if result.sub else None
-                if main.result():return Streams(result.main,result.sub if sub and sub.result() else None)
+                if main.result():return Streams(result.main,result.sub if sub and sub.result() else None,result.method)
         pairs=[tuple(authenticated_rtsp(f'rtsp://{ip}:554{path}',ip,username,password) for path in pair) for pair in PATHS]
         # Deduplicate paths shared by vendors, prioritize main streams first.
         main_probes={u:pool.submit(probe,u) for u in dict.fromkeys(x[0] for x in pairs)}

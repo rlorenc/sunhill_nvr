@@ -19,7 +19,7 @@ from .baichuan_control import Baichuan
 
 TYPES=('person','vehicle','animal','motion','face','package','visitor','tamper')
 ALIASES={'people':'person','person':'person','vehicle':'vehicle','dog_cat':'animal','animal':'animal','face':'face','package':'package','visitor':'visitor','tamper':'tamper','md':'motion'}
-DEFAULT_MASK=7
+DEFAULT_MASK=255
 SOURCE='reolink'
 MAX_CAMERAS=32
 
@@ -35,14 +35,14 @@ def options(db,cid):
     row=db.execute('SELECT enabled,mask,retention_days FROM camera_event_options WHERE camera_id=?',(cid,)).fetchone()
     enabled,mask,days=row or (1,DEFAULT_MASK,365)
     status=db.execute('SELECT transport,state,checked_at,supported FROM camera_event_status WHERE camera_id=?',(cid,)).fetchone()
-    return {'enabled':bool(enabled),'types':[t for i,t in enumerate(TYPES) if mask&(1<<i)],'retention_days':days,
+    return {'enabled':bool(enabled),'types':list(TYPES),'retention_policy':'archive',
             'status':{'transport':status[0],'state':status[1],'checked_at':status[2],'supported':json.loads(status[3])} if status else None}
 
 
 def save_options(db,cid,data):
-    if set(data)!={'enabled','types','retention_days'} or type(data['enabled']) is not bool or not isinstance(data['types'],list) or any(not isinstance(t,str) or t not in TYPES for t in data['types']) or len(set(data['types']))!=len(data['types']) or type(data['retention_days']) is not int or not 1<=data['retention_days']<=3650:raise ValueError('invalid options')
-    mask=sum(1<<TYPES.index(t) for t in data['types'])
-    db.execute('INSERT INTO camera_event_options VALUES(?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET enabled=excluded.enabled,mask=excluded.mask,retention_days=excluded.retention_days',(cid,int(data['enabled']),mask,data['retention_days']))
+    if set(data) not in ({'enabled','types'},{'enabled','types','retention_days'}) or type(data['enabled']) is not bool or not isinstance(data['types'],list) or any(not isinstance(t,str) or t not in TYPES for t in data['types']) or len(set(data['types']))!=len(data['types']) or ('retention_days' in data and (type(data['retention_days']) is not int or not 1<=data['retention_days']<=3650)):raise ValueError('invalid options')
+    mask=DEFAULT_MASK
+    db.execute('INSERT INTO camera_event_options VALUES(?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET enabled=excluded.enabled,mask=excluded.mask,retention_days=excluded.retention_days',(cid,int(data['enabled']),mask,365))
 
 
 def parse_push(root):
@@ -113,15 +113,6 @@ def offline(db,cid,url,state='unavailable'):
         db.execute('INSERT INTO camera_event_status VALUES(?,?,?,?,?) ON CONFLICT(camera_id) DO UPDATE SET state=excluded.state,checked_at=excluded.checked_at',(cid,'',state,int(time.time()),'[]'))
 
 
-def prune(db,now=None):
-    """Bounded retention of native metadata only; HA history unchanged."""
-    now=int(time.time() if now is None else now)
-    if not workers.writes_permitted():return
-    with db:
-        for cid,days in db.execute('SELECT c.id,COALESCE(o.retention_days,365) FROM cameras c LEFT JOIN camera_event_options o ON c.id=o.camera_id').fetchall():
-            db.execute('DELETE FROM event_markers WHERE id IN (SELECT id FROM event_markers WHERE camera_id=? AND source=? AND ended_at IS NOT NULL AND ended_at<? ORDER BY ended_at LIMIT 2000)',(cid,SOURCE,now-86400*days))
-
-
 def push_session(url,stop,emit):
     client=Reolink(url)
     with Baichuan(client.ip,client.username,client.password) as native:
@@ -182,14 +173,13 @@ def run_camera(config,cid,url,stop):
 
 def supervise(config,stop):
     """Run next to existing health worker, no extra install dependencies."""
-    children={};next_prune=0
+    children={}
     try:
         while not stop.is_set():
             try:
                 with contextlib.closing(database.open_db(config.database)) as db:
                     rows=db.execute('SELECT c.id,d.main_url FROM cameras c JOIN camera_details d ON c.id=d.camera_id LEFT JOIN camera_event_options o ON o.camera_id=c.id WHERE c.enabled=1 AND COALESCE(o.enabled,1)=1 ORDER BY c.id LIMIT ?',(MAX_CAMERAS,)).fetchall() if workers.writes_permitted() else []
                     wanted=dict(rows)
-                    if workers.writes_permitted() and time.monotonic()>=next_prune:prune(db);next_prune=time.monotonic()+300
                 for cid,(url,cancel,thread) in list(children.items()):
                     if wanted.get(cid)!=url:cancel.set()
                     if not thread.is_alive():del children[cid]

@@ -53,13 +53,14 @@ def initialize(config, username: str, password: str) -> None:
 def initialize_setup(config) -> str:
     return _initialize(config,None)
 
-def migrate_database(config) -> None:
+def migrate_database(config, *, rtsp_only: bool=False) -> None:
     """Migrate an existing database; the caller must first stop all writers."""
     with contextlib.closing(database.open_db(config.database)) as db:
         result=db.execute('PRAGMA integrity_check').fetchone()
         if not result or result[0]!='ok':raise RuntimeError('database integrity check failed')
         if db.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('database foreign key check failed')
         security.initialize(db);archive.initialize(db);jobs.initialize(db);database.migrate(db)
+        if rtsp_only:database.retire_ftp(db,now=int(time.time()))
         # Preserve existing external mount location, or learn it from the
         # currently accessible archive. Never bind the database to its UUID.
         from .storage_paths import required_location,remember_location
@@ -73,6 +74,16 @@ def migrate_database(config) -> None:
         result=db.execute('PRAGMA integrity_check').fetchone()
         if not result or result[0]!='ok':raise RuntimeError('database integrity check failed')
         if db.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('database foreign key check failed')
+
+def verify_rtsp_recorders(db, *, probe):
+    """Do not retire FTP while an enabled recording camera has no video."""
+    from concurrent.futures import ThreadPoolExecutor
+    rows=db.execute("SELECT c.slug FROM cameras c JOIN camera_details d ON d.camera_id=c.id WHERE c.enabled=1 AND d.record_mode IN ('rtsp','ftp') ORDER BY c.slug").fetchall()
+    slugs=[row[0] for row in rows]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        failed=[slug for slug,ok in zip(slugs,pool.map(probe,slugs)) if not ok]
+    if failed:raise RuntimeError('Brak działającego RTSP dla kamer: '+', '.join(failed))
+    return len(slugs)
 
 def sleep_interruptibly(interval: float, stopping: list[bool], *, monotonic=time.monotonic, sleep=time.sleep) -> None:
     """Keep timer workers responsive to SIGTERM while waiting between cycles."""
@@ -199,6 +210,14 @@ def control_once(config, service_user: str='sunhill') -> None:
         raise
 
 
+def control_rtsp_once(config, service_user: str='sunhill') -> None:
+    account=pwd.getpwnam(service_user)
+    uri='file:'+quote(str(config.database),safe='/')+'?mode=ro'
+    with contextlib.closing(sqlite3.connect(uri,uri=True,timeout=10)) as db:
+        if not database.rtsp_only(db):raise RuntimeError('RTSP-only database migration required')
+        controller.reconcile_gateway(db,config.control_state,account.pw_gid)
+
+
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(prog='sunhill-nvr')
     parser.add_argument('--config',default='/opt/sunhill-nvr/config/config.json')
@@ -207,7 +226,7 @@ def main(argv=None) -> int:
     sub.add_parser('init-setup')
     sub.add_parser('complete-setup',help='Finish initial setup on an existing empty database')
     sub.add_parser('renew-setup')
-    sub.add_parser('migrate')
+    migration=sub.add_parser('migrate');migration.add_argument('--rtsp-only',action='store_true')
     worker=sub.add_parser('export-worker');worker.add_argument('--once',action='store_true')
     index=sub.add_parser('index-worker');index.add_argument('--once',action='store_true')
     health=sub.add_parser('health-worker');health.add_argument('--once',action='store_true')
@@ -219,9 +238,23 @@ def main(argv=None) -> int:
     enroll=sub.add_parser('enroll-storage');enroll.add_argument('--allow-rootfs',action='store_true')
     sub.add_parser('activity-helper')
     sub.add_parser('control-once')
+    sub.add_parser('control-rtsp-once')
+    sub.add_parser('verify-rtsp-recorders',help='Decode one actual frame from every enabled recording camera; no configuration changes')
     sub.add_parser('check-storage')
     sub.add_parser('prepare-storage')
     sub.add_parser('prepare-ftp-homes')
+    firmware=sub.add_parser('camera-firmware',help='Local administrator: ONVIF firmware upload with explicit vendor identity and SHA-256')
+    firmware.add_argument('camera_id',type=int);firmware.add_argument('file',type=Path);firmware.add_argument('--sha256',required=True);firmware.add_argument('--manufacturer',required=True);firmware.add_argument('--model',required=True);firmware.add_argument('--hardware',required=True);firmware.add_argument('--confirm',action='store_true');firmware.add_argument('--expected-version',help='Exact target firmware version for read-only verification after upload')
+    model=sub.add_parser('analytics-model-install',help='Install a trusted local ONNX model after SHA-256 and inference checks')
+    model.add_argument('kind',choices=('coco','face-detector','face-recognizer'));model.add_argument('file',type=Path);model.add_argument('--sha256',required=True)
+    check=sub.add_parser('analytics-model-status',help='Inspect local model availability and optionally run actual inference checks')
+    check.add_argument('--verify',action='store_true')
+    fetch=sub.add_parser('analytics-model-fetch-faces',help='Download pinned OpenCV Zoo YuNet/SFace models (MIT/Apache-2.0)')
+    fetch.add_argument('--accept-licenses',action='store_true');fetch.add_argument('--replace',action='store_true')
+    faces=sub.add_parser('face-enroll',help='Enroll a consenting known subject; no source image is copied into NVR')
+    faces.add_argument('label');faces.add_argument('images',nargs='+',type=Path);faces.add_argument('--consent',action='store_true')
+    sub.add_parser('face-list',help='List enrolled profiles (local administrator only)')
+    forget=sub.add_parser('face-remove',help='Remove an enrolled profile and suppress its label in historical results');forget.add_argument('profile_id')
     args=parser.parse_args(argv)
     config=load(Path(args.config))
     if args.command in ('init','complete-setup'):
@@ -239,7 +272,77 @@ def main(argv=None) -> int:
     if args.command=='renew-setup':
         with contextlib.closing(database.open_db(config.database)) as db:print(security.issue_setup_token(db))
         return 0
-    if args.command=='migrate':migrate_database(config);return 0
+    if args.command=='migrate':migrate_database(config,rtsp_only=args.rtsp_only);return 0
+    if args.command=='verify-rtsp-recorders':
+        from . import stream_health
+        with contextlib.closing(database.open_db(config.database)) as db:
+            verify_rtsp_recorders(db,probe=stream_health.probe)
+        return 0
+    if args.command=='analytics-model-fetch-faces':
+        if os.geteuid()!=0 or not args.accept_licenses:raise ValueError('Wymagany lokalny root i akceptacja licencji modeli')
+        if not workers.writes_permitted():raise ValueError('Trwa konserwacja NVR')
+        from . import analytics_models
+        with analytics_models.provisioning_lock():
+            with contextlib.closing(database.open_db(config.database)) as db:
+                if db.execute('SELECT count(*) FROM face_profiles').fetchone()[0]:raise ValueError('Usuń profile twarzy przed wymianą modelu')
+            for kind,path in analytics_models.fetch_face_models(accept_licenses=True,replace=args.replace).items():print(kind,path)
+        return 0
+    if args.command=='analytics-model-status':
+        if os.geteuid()!=0:raise ValueError('Wymagany lokalny root')
+        import json
+        from . import analytics_models
+        result=analytics_models.status(verify=args.verify)
+        print(json.dumps(result,ensure_ascii=False))
+        return int(args.verify and any(v.get('inference')!='passed' for v in result.values()))
+    if args.command in ('analytics-model-install','face-enroll','face-list','face-remove'):
+        if os.geteuid()!=0:raise ValueError('Wymagany lokalny root')
+        if args.command!='face-list' and not workers.writes_permitted():raise ValueError('Trwa konserwacja NVR')
+        if args.command=='analytics-model-install':
+            from . import analytics_models
+            # Existing embeddings are model-specific. Do not silently invalidate them.
+            with analytics_models.provisioning_lock():
+                if args.kind!='coco':
+                    with contextlib.closing(database.open_db(config.database)) as db:
+                        if db.execute('SELECT count(*) FROM face_profiles').fetchone()[0]:raise ValueError('Usuń profile twarzy przed wymianą modelu')
+                print(analytics_models.install(args.kind,args.file,args.sha256));return 0
+        from . import face_profiles
+        with contextlib.closing(database.open_db(config.database)) as db:
+            if args.command=='face-list':
+                import json
+                print(json.dumps(face_profiles.labels(db),ensure_ascii=False));return 0
+            if args.command=='face-remove':
+                if not face_profiles.remove(db,args.profile_id):raise ValueError('Nieznany profil')
+                return 0
+            if not args.consent or not 1<=len(args.images)<=face_profiles.MAX_TEMPLATES:raise ValueError('Wymagana zgoda osoby i od 1 do 5 zdjęć')
+            import cv2,numpy
+            from . import analytics_models
+            with analytics_models.provisioning_lock():
+                recognizer=face_profiles.Recognizer(cv2,numpy)
+                features=[recognizer.enrollment_image(image) for image in args.images]
+                print(face_profiles.enroll(db,args.label,features,model_id=recognizer.model_id));return 0
+    if args.command=='camera-firmware':
+        from . import camera_firmware,limits
+        if os.geteuid()!=0 or not args.confirm:raise ValueError('Wymagany lokalny root i --confirm')
+        if not workers.writes_permitted():raise ValueError('Trwa konserwacja NVR')
+        if args.expected_version is not None and (not 1<=len(args.expected_version)<=256 or any(ord(c)<32 for c in args.expected_version)):raise ValueError("Nieprawidłowa oczekiwana wersja")
+        data=camera_firmware.image(args.file,args.sha256)
+        expected={'Manufacturer':args.manufacturer,'Model':args.model,'HardwareId':args.hardware}
+        with limits.slot(config.archive_lock.parent,'camera-firmware',count=1):
+            with contextlib.closing(database.open_db(config.database)) as db:
+                row=db.execute('SELECT d.main_url,d.onvif_url,d.onvif_username,d.onvif_password,d.onvif_auth FROM camera_details d JOIN cameras c ON c.id=d.camera_id WHERE c.id=? AND c.enabled=1',(args.camera_id,)).fetchone()
+                if not row:raise ValueError('Kamera nieaktywna lub nie istnieje')
+                with db:db.execute('INSERT INTO audit_log(created_at,user_id,action,object_type,object_id) VALUES(?,NULL,?,?,?)',(int(time.time()),'camera.firmware.request','camera',str(args.camera_id)))
+                try:camera_firmware.upload(row,data,expected)
+                except camera_firmware.FirmwareError:
+                    with db:db.execute('INSERT INTO audit_log(created_at,user_id,action,object_type,object_id) VALUES(?,NULL,?,?,?)',(int(time.time()),'camera.firmware.unconfirmed','camera',str(args.camera_id)))
+                    raise
+                with db:db.execute('INSERT INTO audit_log(created_at,user_id,action,object_type,object_id) VALUES(?,NULL,?,?,?)',(int(time.time()),'camera.firmware.uploaded','camera',str(args.camera_id)))
+                if args.expected_version:
+                    verified=camera_firmware.verify_installed(row,expected,args.expected_version)
+                    with db:db.execute('INSERT INTO audit_log(created_at,user_id,action,object_type,object_id) VALUES(?,NULL,?,?,?)',(int(time.time()),'camera.firmware.version_verified' if verified else 'camera.firmware.version_unconfirmed','camera',str(args.camera_id)))
+                    if not verified:print('Upload potwierdzony; oczekiwana wersja niepotwierdzona. Nie ponawiaj aktualizacji.');return 2
+                    print('Potwierdzona wersja firmware: '+verified['FirmwareVersion']);return 0
+        print('Kamera potwierdziła upload. Sprawdź wersję firmware po restarcie; nie ponawiaj automatycznie.');return 0
     if args.command=='export-worker':export_loop(config,once=args.once);return 0
     if args.command=='index-worker':
         next_full=[0.0]
@@ -256,10 +359,13 @@ def main(argv=None) -> int:
     if args.command=='health-worker':
         if args.once:periodic(config,workers.health_once,60,once=True);return 0
         import threading
-        from . import camera_events
-        stop=threading.Event();thread=threading.Thread(target=camera_events.supervise,args=(config,stop),daemon=True);thread.start()
+        from . import camera_events,object_analytics,tamper
+        stop=threading.Event();threads=[threading.Thread(target=worker.supervise,args=(config,stop),daemon=True) for worker in (camera_events,object_analytics,tamper)]
+        for thread in threads:thread.start()
         try:periodic(config,workers.health_once,60)
-        finally:stop.set();thread.join(timeout=6)
+        finally:
+            stop.set()
+            for thread in threads:thread.join(timeout=6)
         return 0
     if args.command=='clock-worker':periodic(config,workers.clocks_once,900,once=args.once,cancellable=True);return 0
     if args.command=='stream-health-worker':periodic(config,workers.streams_once,300,once=args.once,cancellable=True);return 0
@@ -286,6 +392,7 @@ def main(argv=None) -> int:
             logging.warning('Storage preparation unavailable: %s',exc)
         return 0
     if args.command=='control-once':control_once(config);return 0
+    if args.command=='control-rtsp-once':control_rtsp_once(config);return 0
     if args.command=='prepare-ftp-homes':
         account=pwd.getpwnam('sunhill')
         if os.geteuid()!=account.pw_uid or os.getegid()!=account.pw_gid or os.geteuid()==0:

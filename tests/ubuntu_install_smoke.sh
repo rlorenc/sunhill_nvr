@@ -82,7 +82,7 @@ sudo chmod 0770 /mnt/sunhill-ci/kamery/brama /mnt/sunhill-ci/kamery/brama/2020 /
 printf 'existing recording fixture\n' | sudo tee /mnt/sunhill-ci/kamery/brama/2020/01/01/190900.mp4 >/dev/null
 sudo chgrp sunhill-ci-archive /mnt/sunhill-ci/kamery/brama/2020/01/01/190900.mp4
 sudo chmod 0640 /mnt/sunhill-ci/kamery/brama/2020/01/01/190900.mp4
-if ! sudo env SUNHILL_STORAGE_GROUP=sunhill-ci-archive bash ./install.sh nvr.example.com /mnt/sunhill-ci >"$test_dir/install.log" 2>&1; then
+if ! sudo env SUNHILL_LEGACY_FTP=1 SUNHILL_STORAGE_GROUP=sunhill-ci-archive bash ./install.sh nvr.example.com /mnt/sunhill-ci >"$test_dir/install.log" 2>&1; then
     sudo namei -l /mnt/sunhill-ci/kamery >&2
     getent group sunhill-ci-archive >&2
     sed '/One-time setup code/c\One-time setup code: [redacted]' "$test_dir/install.log" >&2

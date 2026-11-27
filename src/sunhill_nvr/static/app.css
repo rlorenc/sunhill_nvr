@@ -143,3 +143,12 @@ body{background:#101318}main{max-width:1800px}.app-header{background:#171b22;bor
 #manage-cameras .device-control-range input{width:100%}
 #cameras .live-light:not([hidden]){display:grid;gap:5px}
 .event-history-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.6rem 0;border-bottom:1px solid var(--border,#343b44)}.event-history-row button{flex-shrink:0}.timeline-event[data-kind="person"]{background:#ef6464}.timeline-event[data-kind="vehicle"]{background:#e9a23b}.timeline-event[data-kind="animal"]{background:#52bd83}#archive-detection-overlay{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}.detection-box{position:absolute;border:2px solid #63df92;box-sizing:border-box;color:white;font-size:12px;text-shadow:1px 1px 2px black;overflow:hidden}.detection-box[data-kind="person"]{border-color:#ef6464}.detection-box[data-kind="vehicle"]{border-color:#e9a23b}
+
+/* Local digital zoom keeps the player, stream and archive bytes unchanged. */
+.camera video-stream{overflow:hidden}.digital-zoom-active{cursor:grab;touch-action:none;user-select:none}.digital-zoom-active:active{cursor:grabbing}
+
+#motion-region-layer{position:absolute;inset:0;z-index:3;cursor:crosshair;touch-action:none}#motion-region-box{position:absolute;border:2px solid #79c5ff;background:#79c5ff25;pointer-events:none}#motion-search-panel{margin:10px 0}#motion-search-results{display:flex;flex-wrap:wrap;gap:5px}#motion-search-panel label{margin:0;max-width:160px}
+
+.camera video-stream{position:relative}.native-object-overlay{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}.native-object-overlay[hidden]{display:none}.native-track-dot{position:absolute;width:5px;height:5px;border-radius:50%;background:#63df92;transform:translate(-50%,-50%)}.zone-editor-stage{position:relative;width:100%;max-width:720px;aspect-ratio:16/9;background:repeating-linear-gradient(0deg,#162333,#162333 1px,transparent 1px,transparent 10%),repeating-linear-gradient(90deg,#162333,#162333 1px,#0d1521 1px,#0d1521 10%);cursor:crosshair}.zone-editor-stage img,.zone-editor-stage svg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
+
+.brand-link,.brand-link:hover,.brand-link:disabled{background:none;border:0;color:inherit;padding:0;opacity:1}.brand-link:not(:disabled){cursor:pointer}.brand-link:disabled{cursor:default}

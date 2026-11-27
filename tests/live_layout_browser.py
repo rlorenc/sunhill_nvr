@@ -3,13 +3,14 @@ Exercises actual layout CSS, pointer events and custom-element lifecycle with
 synthetic player elements, not real camera streams or backend authentication.
 Run: python tests/live_layout_browser.py
 """
+import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 root=Path(__file__).resolve().parents[1]/'src/sunhill_nvr/static'
 js=(root/'app.js').read_text(); code=js[js.index('let liveLayoutEditing='):js.index('function selectedLiveAlias')]
 css=(root/'app.css').read_text()
 with sync_playwright() as p:
-    browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    browser=p.chromium.launch(executable_path=os.environ.get('SUNHILL_BROWSER_EXECUTABLE','/usr/bin/chromium'),headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
     page=browser.new_page(viewport={'width':1440,'height':1100})
     page.set_content('<style>'+css+'</style><main><button id="edit-live-layout">Edytuj widok</button><button id="reset-live-layout" hidden>Reset</button><p id="live-layout-help" hidden>Edytuj</p><div id="cameras" class="grid" data-count="3"></div></main>')
     page.evaluate('''() => {window.cameras=[1,2,3].map(id=>({id,name:'Camera '+id}));window.$=id=>document.getElementById(id);window.element=(tag,text,cls)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(cls)node.className=cls;return node;};window.disconnects=0;customElements.define('video-stream',class extends HTMLElement{disconnectedCallback(){window.disconnects++;}});}''')

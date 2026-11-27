@@ -10,7 +10,7 @@ import time
 import tempfile
 import subprocess
 from pathlib import Path
-from .config_reconcile import apply,desired
+from .config_reconcile import apply,desired,desired_gateway
 from .ftp_accounts import render_server
 
 class ControllerError(RuntimeError):pass
@@ -191,3 +191,24 @@ def reconcile(db, state_dir: Path, archive_root: Path, uid: int, gid: int, *,
             except (OSError,subprocess.SubprocessError):success=False
         return success
     apply(state_dir,contents,validate=validate,restart=restart,stop=stop,service_gid=gid,required_files=('proftpd.conf',))
+
+
+def reconcile_gateway(db, state_dir: Path, gid: int, *, run=subprocess.run,
+                      trusted_check=require_trusted_directory, readiness=service_ready) -> None:
+    """Activate the RTSP gateway independently of the archive and FTP daemon."""
+    trusted_check(state_dir)
+    unit='sunhill-go2rtc.service'
+    def validate(candidate):
+        try:return isinstance(json.loads((candidate/'go2rtc.json').read_text(encoding='utf-8')),dict)
+        except (OSError,ValueError):return False
+    def action(verb):
+        try:
+            return run(['/usr/bin/systemctl',verb,unit],stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL,stderr=None,timeout=30).returncode==0
+        except (OSError,subprocess.SubprocessError):return False
+    def restart(changed):
+        return action('restart') and readiness(unit)
+    apply(state_dir,desired_gateway(db),validate=validate,restart=restart,
+          stop=lambda changed:action('stop'),service_gid=gid,required_files=('go2rtc.json',))
+    # An unchanged configuration still has to be started after reboot.
+    if not action('start') or not readiness(unit):raise ControllerError('stream gateway not ready')

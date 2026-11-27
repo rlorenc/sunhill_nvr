@@ -21,10 +21,11 @@ SERVICES = (
 
 BOOT_UNITS = ('nginx.service', *ENABLED, 'sunhill-upgrade-ready.service', 'sunhill-upgrade-apply.timer')
 
-def check(host: str, *, run=subprocess.run, opener=None, readiness=None) -> None:
+def check(host: str, *, run=subprocess.run, opener=None, readiness=None, rtsp_only: bool=False) -> None:
     if not HOST.fullmatch(host):
         raise ValueError('invalid hostname')
     for unit in SERVICES:
+        if rtsp_only and unit=='sunhill-ftp.service':continue
         result = run(['/usr/bin/systemctl', 'is-active', '--quiet', unit],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, timeout=5)
@@ -40,6 +41,7 @@ def check(host: str, *, run=subprocess.run, opener=None, readiness=None) -> None
             raise RuntimeError('service is not enabled for boot: ' + unit)
     readiness = readiness or service_ready
     for unit in ('sunhill-go2rtc.service', 'sunhill-ftp.service'):
+        if rtsp_only and unit=='sunhill-ftp.service':continue
         if not readiness(unit, timeout=3):
             raise RuntimeError('service is not responding: ' + unit)
     opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -52,11 +54,11 @@ def check(host: str, *, run=subprocess.run, opener=None, readiness=None) -> None
             raise RuntimeError('Nginx endpoint health check failed')
 
 
-def wait(host: str, *, timeout: float = 30) -> None:
+def wait(host: str, *, timeout: float = 30, rtsp_only: bool=False) -> None:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            check(host)
+            check(host,rtsp_only=rtsp_only)
             return
         except (RuntimeError, OSError, subprocess.SubprocessError, urllib.error.URLError) as exc:
             if time.monotonic() >= deadline:
@@ -65,10 +67,12 @@ def wait(host: str, *, timeout: float = 30) -> None:
 
 
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv) != 2:
-        raise SystemExit('usage: python3 -m sunhill_nvr.install_health HOSTNAME')
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('hostname')
+    parser.add_argument('--rtsp-only',action='store_true')
+    args=parser.parse_args()
     try:
-        wait(sys.argv[1])
+        wait(args.hostname,rtsp_only=args.rtsp_only)
     except (RuntimeError, ValueError) as error:
         raise SystemExit('Installation did not pass startup checks: ' + str(error)) from error

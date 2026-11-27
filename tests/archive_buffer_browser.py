@@ -1,5 +1,6 @@
 """Chromium archive playback using two real synthetic MP4s, not production data."""
 import base64, subprocess, tempfile
+import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -11,7 +12,7 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',f'color={color}:s=160x90:r=10','-t','4','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(path)],check=True)
         samples.append(base64.b64encode(path.read_bytes()).decode())
     with sync_playwright() as p:
-        browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+        browser=p.chromium.launch(executable_path=os.environ.get('SUNHILL_BROWSER_EXECUTABLE','/usr/bin/chromium'),headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
         page=browser.new_page(viewport={'width':1280,'height':800});errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
         # No network: browser decodes actual media from local Blob URLs.
         html=(ROOT/'index.html').read_text();html=html.replace('<script src="/assets/app.js" defer></script>','')
@@ -43,6 +44,8 @@ with tempfile.TemporaryDirectory() as directory:
         assert page.locator('#archive-detection-overlay .detection-box').count()==1
         assert page.locator('#archive-detection-overlay .detection-box').inner_text()=='Człowiek'
         assert page.locator('#archive-detection-overlay .detection-box').bounding_box()['width']>0
+        page.evaluate("code=>runArchiveTest(code)","eventMarkers=Array.from({length:24},(_,i)=>({id:i,timestamp:1795608002,type:'person',box:[0.1,0.2,0.3,0.4]}));drawDetectionOverlay($('archive-player'),1795608002)")
+        assert page.locator('#archive-detection-overlay .detection-box').count()==24
         page.evaluate("code=>runArchiveTest(code)","drawDetectionOverlay($('archive-player'),1795608004)")
         assert page.locator('#archive-detection-overlay').is_hidden()
         page.evaluate("code=>runArchiveTest(code)","eventMarkers=[{id:100,timestamp:1795608002,type:'animal'}];drawDetectionOverlay($('archive-player'),1795608002)")
@@ -70,6 +73,16 @@ with tempfile.TemporaryDirectory() as directory:
         # Simulate a browser that rejects the original tag but accepts its remux.
         page.evaluate("code=>runArchiveTest(code)","""archiveCompatCameras.clear();playbackGeneration++;clearArchiveBuffers();const player=$('archive-player');player.pause();player.removeAttribute('src');player.load();archiveRecordId=null;loadedArchiveDate=null;archiveSource=id=>id===2&&!archiveCompatCameras.has(activeCamera.id)?badURL:sampleURLs[id-1];loadArchive(true);""")
         page.wait_for_function("archiveTest.id()===2 && document.querySelector('#archive-player').readyState>=2 && !document.querySelector('#archive-player').paused && document.querySelector('#archive-playback-note').hidden", timeout=15000)
+        # The logo follows the same navigation path as Na żywo, including playback cleanup.
+        page.evaluate("code=>runArchiveTest(code)","$('brand-live').disabled=false;$('app-nav').hidden=false;$('camera-view').hidden=true;$('login-panel').hidden=true;ensureLivePlayer=()=>{}")
+        page.locator('#brand-live').click()
+        assert page.locator('#camera-view').is_visible() and page.locator('#archive-view').is_hidden()
+        assert page.locator('#archive-player').evaluate('(e)=>e.paused')
+        assert page.locator('#show-cameras').get_attribute('aria-current')=='page'
+        page.evaluate("code=>runArchiveTest(code)","view('admin')")
+        assert page.locator('#admin-view').is_visible()
+        page.locator('#brand-live').focus();page.keyboard.press('Enter')
+        assert page.locator('#camera-view').is_visible() and page.locator('#admin-view').is_hidden()
         assert not errors,errors
         browser.close()
         print('Chromium: real MP4 decoding, adjacent prefetch, forward/back seek while paused, full-screen video stage remains active, cleanup OK')

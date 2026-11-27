@@ -22,6 +22,7 @@ from .upgrade_system import SystemAdapter
 from .upgrade_transaction import activate, finalize_offline, recover, recover_offline, _current_version, _read_journal
 from . import approved_update, upgrade_inbox, tls_apply, storage_admin, storage_transaction, domain_change, tls, config
 from .storage_system import StorageSystem
+from . import rollback_history
 
 
 ROOT=Path('/opt/sunhill-nvr')
@@ -44,6 +45,13 @@ _ERROR_MESSAGES={
     'new unit conflicts with existing configuration':'Nowa usługa koliduje z istniejącą konfiguracją systemu.',
     'new unit lacks boot recovery dependency':'Nowa konfiguracja usług nie zapewnia odzyskiwania po restarcie.',
     'unsupported service enablement state':'Nieobsługiwany stan autostartu usługi. Aktualizacja została zatrzymana.',
+    'other update request pending':'Inna operacja oczekuje na wykonanie.',
+    'no retained restore point for requested version':'Brak zachowanej kopii dla wybranej wersji.',
+    'active version changed; refresh rollback list':'Wersja aktywna się zmieniła. Odśwież listę.',
+    'instance configuration changed since restore point':'Zmieniono konfigurację instancji (np. ścieżki nagrań lub domenę). Przywracanie zablokowane.',
+    'TLS mode changed since restore point':'Zmieniono tryb TLS. Przywracanie zablokowane.',
+    'legacy rollback requires installed ProFTPD':'Starsza wersja wymaga zainstalowanego ProFTPD. Przywracanie zablokowane.',
+    'retained release integrity check failed':'Weryfikacja zachowanej wersji nie powiodła się.',
     'new release failed its health check':'Nowa wersja nie przeszła kontroli usług. Przywrócono poprzednią wersję.',
 }
 
@@ -149,6 +157,45 @@ def process_approved(adapter: SystemAdapter) -> bool:
     return True
 
 
+def _reject_pending_rollback_requests():
+    for name in (rollback_history.REQUEST,'request.json',approved_update.REQUEST,'domain-request.json','storage-request.json','tls-request.json'):
+        p=INBOX/name
+        if p.exists() or p.is_symlink():raise ReleaseError('other update request pending')
+
+
+def process_rollback(adapter: SystemAdapter) -> bool:
+    path=INBOX/rollback_history.REQUEST
+    try:info=path.lstat()
+    except FileNotFoundError:return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=adapter.uid or info.st_nlink!=1 or info.st_size>4096:
+        raise ReleaseError('invalid rollback request')
+    identity=(info.st_dev,info.st_ino)
+    try:
+        with tempfile.TemporaryDirectory(prefix='.rollback-request-',dir=STATE) as directory:
+            copy=Path(directory)/'request';_snapshot(path,copy,4096);value=json.loads(copy.read_bytes())
+        if (not isinstance(value,dict) or set(value)!={'id','expected','user_id'} or type(value['user_id']) is not int or value['user_id']<1
+            or not isinstance(value['id'],str) or not rollback_history.TOKEN.fullmatch(value['id'])
+            or not isinstance(value['expected'],str) or not rollback_history.VERSION.fullmatch(value['expected'])):
+            raise ReleaseError('invalid rollback request')
+        # Consume before activation so an interrupted operation cannot repeat.
+        now=path.lstat()
+        if (now.st_dev,now.st_ino)!=identity:raise ReleaseError('rollback request changed')
+        path.unlink();rollback_history._sync_dir(INBOX)
+        _reject_pending_rollback_requests()
+        _status(adapter,'applying','Przywracanie zapisanej wersji i bazy danych.')
+        restored=rollback_history.rollback(adapter,VERSIONS,CURRENT,token=value['id'],expected=value['expected'])
+        _status(adapter,'done','Przywrócono wersję '+restored+'.')
+    except Exception as error:
+        logging.error('Rollback failed: %s',type(error).__name__)
+        _status(adapter,'recovery_required' if (STATE/'transaction.json').exists() else 'failed',failure_message(error))
+    finally:
+        try:
+            now=path.lstat()
+            if (now.st_dev,now.st_ino)==identity:path.unlink()
+        except FileNotFoundError:pass
+    return True
+
+
 def process_inbox(adapter: SystemAdapter) -> bool:
     """Process one untrusted request. Called under the exclusive manager lock."""
     journal=_read_journal(STATE)
@@ -183,6 +230,7 @@ def process_inbox(adapter: SystemAdapter) -> bool:
     if storage_admin.process(adapter,INBOX):return True
     if tls_apply.process(adapter,INBOX,TLS_ROOT):return True
     if domain_change.process(adapter,INBOX,TLS_ROOT):return True
+    if process_rollback(adapter):return True
     if process_approved(adapter):return True
     item=upgrade_inbox.read_request(INBOX,with_identity=True)
     if item is None:return False
@@ -213,6 +261,8 @@ def main(argv=None) -> int:
     parser=argparse.ArgumentParser(prog='sunhill-upgrade')
     sub=parser.add_subparsers(dest='command',required=True)
     apply=sub.add_parser('apply');apply.add_argument('archive',type=Path);apply.add_argument('signature',type=Path,nargs='?')
+    restore=sub.add_parser('rollback');restore.add_argument('version',nargs='?');restore.add_argument('--yes',action='store_true',required=True)
+    sub.add_parser('rollback-history')
     sub.add_parser('recover-offline');sub.add_parser('finalize');sub.add_parser('process-inbox')
     lan=sub.add_parser('generate-lan-tls',help='Generate a private LAN CA and HTTPS certificate; clients must trust the CA')
     lan.add_argument('--next-hostname',help='Include a second DNS name before a planned domain change')
@@ -245,6 +295,14 @@ def main(argv=None) -> int:
                 _status(adapter,'done' if journal['phase']=='committed' else 'failed',
                         'Aktualizacja zakończona.' if journal['phase']=='committed' else 'Poprzednia wersja została przywrócona po przerwaniu aktualizacji.')
         elif args.command=='process-inbox':process_inbox(adapter)
+        elif args.command=='rollback-history':print(json.dumps(rollback_history.read(STATE),ensure_ascii=False,indent=2))
+        elif args.command=='rollback':
+            _reject_pending_rollback_requests()
+            _status(adapter,'applying','Przywracanie zapisanej wersji i bazy danych.')
+            try:restored=rollback_history.rollback(adapter,VERSIONS,CURRENT,version=args.version)
+            except Exception as error:
+                _status(adapter,'recovery_required' if (STATE/'transaction.json').exists() else 'failed',failure_message(error));raise
+            _status(adapter,'done','Przywrócono wersję '+restored+'.');print('Restored version: '+restored)
         elif args.command=='generate-lan-tls':
             for name in ('transaction.json','domain-transaction.json','tls-transaction.json','storage-transaction.json'):
                 if (STATE/name).exists() or (STATE/name).is_symlink():raise ReleaseError('pending recovery transaction')

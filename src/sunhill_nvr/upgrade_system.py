@@ -77,6 +77,7 @@ class SystemAdapter:
     nginx_file: Path = Path('/etc/nginx/conf.d/sunhill-nvr.conf')
     tls_certificate: Path = Path('/opt/sunhill-nvr/config/tls/current/fullchain.pem')
     tls_key: Path = Path('/opt/sunhill-nvr/config/tls/current/key.pem')
+    retire_ftp: bool = False
 
     def _command(self,args,timeout=60):
         try:
@@ -170,15 +171,16 @@ class SystemAdapter:
     def _healthy_once(self) -> bool:
         try:
             # systemctl with several units may succeed when only one is active.
-            paused=self._ftp_storage_paused()
-            for service in self._runtime()['active']:
+            active=self._runtime()['active']
+            paused='sunhill-ftp.service' in active and self._ftp_storage_paused()
+            for service in active:
                 if service=='sunhill-ftp.service' and paused:continue
                 self._command(['/usr/bin/systemctl','is-active','--quiet',service],timeout=30)
             # Active systemd processes are not necessarily accepting requests yet.
             self._command(['/usr/bin/systemctl','is-active','--quiet','nginx.service'],timeout=30)
             for service in ('sunhill-go2rtc.service','sunhill-ftp.service'):
                 if service=='sunhill-ftp.service' and paused:continue
-                if service in self._runtime()['active'] and not service_ready(service,timeout=3):return False
+                if service in active and not service_ready(service,timeout=3):return False
             opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open('http://127.0.0.1:8088/internal/health',timeout=5) as response:
                 return response.status==200 and response.read(1024)==b'{"status":"ok"}'
@@ -187,7 +189,11 @@ class SystemAdapter:
     def healthy(self) -> bool:
         deadline=time.monotonic()+max(0,self.health_timeout)
         while True:
-            if self._healthy_once():return True
+            if self._healthy_once():
+                if self.retire_ftp and self._runtime()['version']==2:
+                    try:self._as_service(self.current,'sunhill_nvr.cli','--config',str(self.config_file),'verify-rtsp-recorders')
+                    except ReleaseError:return False
+                return True
             if time.monotonic()>=deadline:return False
             time.sleep(min(1,max(0,deadline-time.monotonic())))
 
@@ -212,8 +218,28 @@ class SystemAdapter:
             os.chown(temp,self.uid,self.gid)
             self._as_service(self._old_release(),'sunhill_nvr.upgrade_database','--config',str(self.config_file),'restore',str(raw))
 
+    def restore_retained(self,source: Path) -> None:
+        # Use the pinned manager, not the potentially older application, to
+        # invalidate restored session tokens before any old writer starts.
+        with tempfile.TemporaryDirectory(prefix='.db-restore-',dir=self.state) as name:
+            temp=Path(name);raw=temp/'backup.sqlite'
+            _copy_private(source,raw,uid=self.uid,gid=self.gid)
+            os.chown(temp,self.uid,self.gid)
+            self._as_service(self.current.parent/'recovery','sunhill_nvr.upgrade_database','--config',str(self.config_file),'restore-retained',str(raw))
+
     def migrate(self,candidate: Path) -> None:
-        self._as_service(candidate,'sunhill_nvr.cli','--config',str(self.config_file),'migrate')
+        args=['--config',str(self.config_file),'migrate']
+        journal=_read_journal(self.state)
+        if journal and journal.get('system_backup'):
+            backup=self.state/journal['system_backup']
+            self._trusted_backup_directory(backup)
+            if self._read_trusted(backup/'complete',limit=64)!=b'complete\n':raise ReleaseError('incomplete system backup')
+            saved=json.loads(self._read_trusted(backup/'units.json',limit=32768))
+            if isinstance(saved,dict):
+                _,new_names=self._backup_unit_sets(saved)
+                manifest=lifecycle.validate(json.loads(self._read_trusted(backup/'new/lifecycle.json',limit=32768)),new_names)
+                if manifest['version']==2:args.append('--rtsp-only')
+        self._as_service(candidate,'sunhill_nvr.cli',*args)
 
     @staticmethod
     def _read_trusted(path: Path, *, limit: int=131072) -> bytes:
@@ -284,6 +310,7 @@ class SystemAdapter:
             # While recovering an interrupted unit-set change, the two manifests
             # can reflect different sides of the same transaction.
             names=self._managed_names()
+            transitional=False
             journal=_read_journal(self.state)
             if journal and journal.get('system_backup') and journal['phase'] in ('backed_up','migrating'):
                 backup=self.state/journal['system_backup']
@@ -293,8 +320,8 @@ class SystemAdapter:
                 if isinstance(saved,dict):
                     old_names,new_names=self._backup_unit_sets(saved)
                     if names not in (old_names,new_names):raise ReleaseError('managed unit list changed')
-                    names=list(set(old_names)|set(new_names))
-            return lifecycle.validate(value,names)
+                    names=list(set(old_names)|set(new_names));transitional=True
+            return lifecycle.validate(value,names,transitional=transitional)
         except (OSError,KeyError,TypeError,ValueError) as exc:raise ReleaseError('invalid lifecycle manifest') from exc
 
     def _enabled(self, names) -> set[str]:
@@ -357,6 +384,57 @@ class SystemAdapter:
             self._command(['/usr/bin/systemctl','enable',*desired_runtime['enabled']],timeout=120)
         if not offline:self._command(['/usr/bin/systemctl','reload','nginx.service'],timeout=60)
 
+    def _save_rollback_context(self,destination: Path) -> None:
+        self._write_private(destination/'instance.json',self._read_trusted(self.config_file,limit=16384))
+        self._write_private(destination/'tls-mode',b'1' if self.tls_certificate.exists() else b'0')
+
+    def check_rollback_context(self,folder: Path) -> None:
+        self._trusted_backup_directory(folder)
+        if self._read_trusted(folder/'instance.json',limit=16384)!=self._read_trusted(self.config_file,limit=16384):
+            raise ReleaseError('instance configuration changed since restore point')
+        if self.tls_certificate.exists()!=self.tls_key.exists() or self._read_trusted(folder/'tls-mode',limit=4)!=(b'1' if self.tls_certificate.exists() else b'0'):
+            raise ReleaseError('TLS mode changed since restore point')
+
+    def backup_rollback_system(self,folder: Path,destination: Path) -> None:
+        """Build a fresh reversible transaction from an earlier system snapshot."""
+        self.check_rollback_context(folder)
+        saved=json.loads(self._read_trusted(folder/'units.json',limit=32768))
+        if not isinstance(saved,dict):raise ReleaseError('legacy restore point has no lifecycle manifest')
+        wanted_names,_=self._backup_unit_sets(saved)
+        names=self._managed_names();source=folder/'old';self._trusted_backup_directory(source)
+        wanted=lifecycle.validate(json.loads(self._read_trusted(source/'lifecycle.json',limit=32768)),wanted_names)
+        runtime=lifecycle.validate(self._runtime(),names)
+        actual=self._enabled(runtime['active']);runtime['enabled']=[n for n in runtime['active'] if n in actual]
+        old_contents={n:self._read_trusted(self.system_dir/n) for n in names}
+        new_contents={n:self._read_trusted(source/n) for n in wanted_names}
+        protected={n for n in names if n.startswith('sunhill-upgrade-')}
+        if protected!={n for n in wanted_names if n.startswith('sunhill-upgrade-')} or any(old_contents[n]!=new_contents[n] for n in protected):
+            raise ReleaseError('restore point changes recovery units')
+        for n in set(wanted_names)-set(names):
+            p=self.system_dir/n
+            if p.exists() or p.is_symlink():raise ReleaseError('restore unit conflicts with existing configuration')
+        if wanted['version']==1 and not Path('/usr/sbin/proftpd').is_file():
+            raise ReleaseError('legacy rollback requires installed ProFTPD')
+        proxy=self._read_trusted(source/'nginx.conf')
+        if b'if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }' not in proxy:
+            raise ReleaseError('restore proxy lacks maintenance fence')
+        destination.mkdir(mode=0o700)
+        for side,contents,life,nginx in (('old',old_contents,runtime,self._read_trusted(self.nginx_file)),('new',new_contents,wanted,proxy)):
+            directory=destination/side;directory.mkdir(mode=0o700)
+            for n,body in contents.items():self._write_private(directory/n,body)
+            self._write_private(directory/'lifecycle.json',json.dumps(life,separators=(',',':')).encode())
+            self._write_private(directory/'nginx.conf',nginx)
+            self._sync_parent(directory/'nginx.conf')
+        self._write_private(destination/'units.json',json.dumps({'version':2,'old':names,'new':wanted_names},separators=(',',':')).encode())
+        self._save_rollback_context(destination)
+        self._write_private(destination/'complete',b'complete\n');self._sync_parent(destination/'complete')
+
+    def retain_rollback(self,journal: dict) -> bool:
+        from .rollback_history import retain
+        # A terminal journal written by a pre-1.1.3 manager has no instance snapshot.
+        if not journal.get('system_backup') or not (self.state/journal['system_backup']/'instance.json').is_file():return False
+        return retain(self,journal)
+
     def backup_system(self,candidate: Path,destination: Path) -> None:
         """Capture active files and generate candidate files in root-only storage."""
         names=self._managed_names()
@@ -370,6 +448,9 @@ class SystemAdapter:
             command=['/usr/bin/env','-i','PATH=/usr/bin:/bin',f'PYTHONPATH={candidate / "app"}',
                      '/usr/bin/python3','-m','sunhill_nvr.deployment_cli','--config',str(self.config_file),'--output',str(generated)]
             if cert:command.append('--lan-tls')
+            # Never silently re-enable FTP after the transition. An explicit
+            # console retirement uses the same reversible system backup.
+            if self.retire_ftp or self._runtime()['version']==2:command.append('--rtsp-only')
             self._command(command,timeout=60)
             unit_dir=generated/'units'
             if unit_dir.is_symlink() or not unit_dir.is_dir():raise ReleaseError('generated units unavailable')
@@ -418,6 +499,7 @@ class SystemAdapter:
             self._write_private(old/'nginx.conf',previous);self._write_private(new/'nginx.conf',following)
         saved={'version':2,'old':names,'new':next_names} if modern else names
         self._write_private(destination/'units.json',json.dumps(saved,separators=(',',':')).encode())
+        if modern:self._save_rollback_context(destination)
         self._write_private(destination/'complete',b'complete\n')
         for directory in (old,new,destination):
             fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
@@ -453,4 +535,4 @@ class SystemAdapter:
         self._command(['/usr/bin/systemctl','reload','nginx.service'],timeout=60)
 
     def operations(self) -> Operations:
-        return Operations(self.fence,self.unfence,self.stop,self.assert_stopped,self.start,self.healthy,self.backup,self.restore,self.migrate,self.backup_system,self.apply_system,self.restore_system,self.restore_system_offline,self.finalize_system)
+        return Operations(self.fence,self.unfence,self.stop,self.assert_stopped,self.start,self.healthy,self.backup,self.restore,self.migrate,self.backup_system,self.apply_system,self.restore_system,self.restore_system_offline,self.finalize_system,self.retain_rollback)

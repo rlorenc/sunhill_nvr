@@ -43,6 +43,12 @@ def desired(db: sqlite3.Connection, archive_root: Path, uid: int, gid: int, *, s
             'ftp.passwd':render(accounts,archive_root,uid,gid),
             'ftp.group':groups}
 
+def desired_gateway(db: sqlite3.Connection) -> dict[str,str]:
+    """Render the RTSP gateway without querying legacy FTP accounts or storage."""
+    rows=db.execute('SELECT cameras.slug,cameras.name,camera_details.main_url,camera_details.sub_url,camera_details.record_mode,cameras.enabled FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id ORDER BY cameras.slug').fetchall()
+    return {'go2rtc.json':go2rtc_config([Camera(slug,name,main,sub,mode,bool(enabled)) for slug,name,main,sub,mode,enabled in rows])}
+
+
 def _sync_dir(path: Path) -> None:
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:os.fsync(fd)
@@ -79,7 +85,7 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
     """
     if state_dir.is_symlink() or not state_dir.is_dir():raise ReconcileError('invalid state directory')
     base={'go2rtc.json','ftp.passwd','ftp.group'}
-    if set(contents) not in (base,base|{'proftpd.conf'}):raise ReconcileError('invalid configuration set')
+    if set(contents) not in ({'go2rtc.json'},base,base|{'proftpd.conf'}):raise ReconcileError('invalid configuration set')
     if any(not name or '/' in name or name in ('.','..') for name in required_files):raise ReconcileError('invalid required file')
     current=state_dir/'current'
     pending=state_dir/'.activation-pending';interrupted=_pending(pending)
@@ -103,7 +109,7 @@ def apply(state_dir: Path, contents: dict[str,str], *, validate, restart, stop=N
                 if stat.S_IMODE(info.st_mode)!=expected:repair.add(name)
             previous_contents={name:(previous/name).read_text(encoding='utf-8') for name in contents}
             rollback_safe=not repair and all((previous/name).is_file() and not (previous/name).is_symlink() for name in required_files)
-            if not interrupted and rollback_safe and previous_contents==contents:
+            if not interrupted and rollback_safe and previous_contents==contents and (set(contents)!={'go2rtc.json'} or not any(os.path.lexists(previous/name) for name in ('ftp.passwd','ftp.group','proftpd.conf'))):
                 return
         except OSError:
             pass

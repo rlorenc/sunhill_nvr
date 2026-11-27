@@ -37,6 +37,17 @@ class UpgradeDatabaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'foreign key'):backup(SimpleNamespace(database=bad),out)
             self.assertFalse(out.exists())
 
+    def test_retained_restore_invalidates_old_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);db_path=root/'db.sqlite';db=open_db(db_path,create=True)
+            db.execute('CREATE TABLE sessions(token TEXT)');db.execute("INSERT INTO sessions VALUES ('revoked')");db.commit();db.close()
+            cfg=SimpleNamespace(database=db_path);backup(cfg,root/'backup.sqlite')
+            restore(cfg,root/'backup.sqlite',invalidate_sessions=True)
+            with closing(sqlite3.connect(db_path)) as check:
+                self.assertEqual(check.execute('SELECT count(*) FROM sessions').fetchone(),(0,))
+            with closing(sqlite3.connect(root/'backup.sqlite')) as check:
+                self.assertEqual(check.execute('SELECT count(*) FROM sessions').fetchone(),(1,))
+
     def test_restore_rejects_symbolic_link(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);link=root/'backup.sqlite';link.symlink_to('/etc/passwd')

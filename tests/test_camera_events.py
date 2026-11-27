@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
-from sunhill_nvr import camera_events as e, database, security, archive, jobs, cli, baichuan_control as b
+from sunhill_nvr import metadata_retention, camera_events as e, database, security, archive, jobs, cli, baichuan_control as b
 from test_baichuan_control import FakeCamera
 
 URL='rtsp://user:pass@192.168.1.30/main'
@@ -30,9 +30,9 @@ class EventsTests(unittest.TestCase):
     def test_edges_duration_dedup_and_filter(self):
         for t,state in [(100,True),(101,True),(120,True),(130,False),(140,True)]:
             e.snapshot(self.db,1,URL,{'person':state,'motion':True},'cgi',t)
-        self.assertEqual(self.db.execute('SELECT event_type,started_at,ended_at,last_seen FROM event_markers ORDER BY started_at').fetchall(),[('person',100,130,120),('person',140,None,140)])
+        self.assertEqual(self.db.execute("SELECT event_type,started_at,ended_at,last_seen FROM event_markers WHERE event_type='person' ORDER BY started_at").fetchall(),[('person',100,130,120),('person',140,None,140)])
         e.snapshot(self.db,1,URL,{'person':True},'cgi',250)
-        self.assertEqual(self.db.execute('SELECT started_at,ended_at FROM event_markers ORDER BY started_at').fetchall(),[(100,130),(140,140),(250,None)])
+        self.assertEqual(self.db.execute("SELECT started_at,ended_at FROM event_markers WHERE event_type='person' ORDER BY started_at").fetchall(),[(100,130),(140,140),(250,None)])
     def test_disabled_and_identity_race(self):
         self.assertFalse(e.snapshot(self.db,1,'rtsp://other',{'person':True},'cgi',100))
         with self.db:e.save_options(self.db,1,{'enabled':False,'types':['person'],'retention_days':3})
@@ -43,7 +43,7 @@ class EventsTests(unittest.TestCase):
         with self.db:
             self.db.execute("INSERT INTO event_markers(camera_id,started_at,event_type,source) VALUES(1,100,'person','home_assistant')")
             e.save_options(self.db,1,{'enabled':True,'types':['person'],'retention_days':1})
-        e.prune(self.db,now=100000)
+        metadata_retention.reconcile(self.db,guard=lambda:True,complete=True,now=100000)
         self.assertEqual(self.db.execute('SELECT source FROM event_markers').fetchall(),[('home_assistant',)])
     def test_box_validation(self):
         self.assertEqual(e.normalize_box([0.1,0.2,0.3,0.4]),[0.1,0.2,0.3,0.4])

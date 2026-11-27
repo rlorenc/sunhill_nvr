@@ -30,6 +30,7 @@ def submit(inbox: Path,name: str,user_id: int,root: Path | None=None):
     if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077:raise ValueError('invalid inbox')
     if name not in available(root) or type(user_id) is not int or user_id<1:raise ValueError('invalid approved update')
     with _upload_lock(inbox):
+        if (inbox/'rollback-request.json').exists() or (inbox/'rollback-request.json').is_symlink():raise FileExistsError('rollback pending')
         if (inbox/'request.json').exists() or (inbox/'request.json').is_symlink():raise FileExistsError('signed update pending')
         temp=inbox/('.approved-'+secrets.token_hex(16))
         try:

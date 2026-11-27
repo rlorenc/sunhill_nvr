@@ -114,6 +114,36 @@ CREATE TABLE camera_event_status (
  camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE,
  transport TEXT NOT NULL, state TEXT NOT NULL, checked_at INTEGER NOT NULL, supported TEXT NOT NULL
 );
+''',
+10: '''
+CREATE TABLE live_workspaces (
+ user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ state_json TEXT NOT NULL
+);
+''',
+11: '''
+CREATE TABLE camera_metadata_options (
+ camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE,
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 30), rules_json TEXT NOT NULL
+);
+CREATE TABLE camera_metadata_status (
+ camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, state TEXT NOT NULL, checked_ms INTEGER NOT NULL
+);
+CREATE TABLE camera_metadata_latest (
+ camera_id INTEGER PRIMARY KEY REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, received_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL
+);
+CREATE TABLE camera_metadata_history (
+ camera_id INTEGER REFERENCES cameras(id) ON DELETE CASCADE, stamp_ms INTEGER NOT NULL, objects_json TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(camera_id,stamp_ms)
+) WITHOUT ROWID;
+''',
+12: '''
+UPDATE camera_event_options SET mask=255;
+''',
+13: '''
+ALTER TABLE camera_metadata_options ADD COLUMN source_mode TEXT NOT NULL DEFAULT 'auto' CHECK(source_mode IN ('auto','local'));
+CREATE TABLE face_profiles (id TEXT PRIMARY KEY, label TEXT NOT NULL, model_sha256 TEXT NOT NULL);
+CREATE TABLE face_templates (id INTEGER PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES face_profiles(id) ON DELETE CASCADE, feature_json TEXT NOT NULL);
+CREATE INDEX idx_face_templates_profile ON face_templates(profile_id);
 '''
 }
 
@@ -199,3 +229,28 @@ def backup(db: sqlite3.Connection, target: Path) -> None:
     except BaseException:
         target.unlink(missing_ok=True)
         raise
+
+
+def rtsp_only(db: sqlite3.Connection) -> bool:
+    row=db.execute("SELECT value FROM system_settings WHERE key='recording_transport'").fetchone()
+    return row is not None and row[0]=='rtsp-only'
+
+
+def retire_ftp(db: sqlite3.Connection, *, now: int) -> int:
+    """Run only with writers stopped and a verified database backup available.
+
+    Archive paths, indexes, user settings and camera identities are unchanged.
+    FTP accounts and mappings are retired; rollback restores them from backup.
+    """
+    from .cameras import validate_rtsp
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        rows=db.execute("SELECT main_url FROM camera_details WHERE record_mode='ftp'").fetchall()
+        for (url,) in rows:validate_rtsp(url)
+        count=db.execute("UPDATE camera_details SET record_mode='rtsp',recording_since=? WHERE record_mode='ftp'",(now,)).rowcount
+        db.execute('DELETE FROM camera_ftp_accounts')
+        db.execute('DELETE FROM ftp_accounts')
+        db.execute("DELETE FROM service_health WHERE name IN ('sunhill-ftp.service','sunhill-ftp-policy.service')")
+        db.execute("DELETE FROM pending_notifications WHERE camera_id IS NULL AND source IN ('sunhill-ftp.service','sunhill-ftp-policy.service') AND state IN ('service_down','service_up')")
+        db.execute("INSERT INTO system_settings(key,value) VALUES('recording_transport','rtsp-only') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    return count

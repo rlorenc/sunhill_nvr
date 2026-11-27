@@ -133,7 +133,7 @@ class StorageSystem:
         a._command(['/usr/bin/systemctl','daemon-reload'])
 
     def apply(self,path: Path) -> None:
-        a=self.adapter;cfg=self.candidate(path);names=a._managed_names();generated=units.render(cfg)
+        a=self.adapter;cfg=self.candidate(path);names=a._managed_names();generated=units.render(cfg,rtsp_only=a._runtime()['version']==2)
         if sorted(generated)!=names:raise ReleaseError('managed units changed unexpectedly')
         contents={name:generated[name].encode() for name in names}
         for name in names:

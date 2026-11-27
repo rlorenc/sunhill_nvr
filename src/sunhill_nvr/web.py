@@ -24,8 +24,9 @@ from urllib.parse import parse_qs, urlsplit
 from . import security,database,workers
 from .media_layout import validate_media_layout,nested_auxiliary
 from .cameras import Camera, validate, with_credentials
-from . import camera_discovery,player_assets,camera_statistics,camera_control,camera_settings,camera_events
+from . import camera_discovery,player_assets,camera_statistics,camera_control,camera_settings,camera_events,live_workspace,camera_reboot,motion_search,object_analytics,onvif_capabilities,camera_firmware
 from .nginx_config import HOST
+from . import rollback_history
 from .fd_mount import MountBoundary,MountUnavailable
 from .files import FileBody, InvalidRange, acquire_shared, open_confined, open_export, delete_export, parse_range, recorded_identity
 from . import archive_compat, __version__, approved_update, ftp_accounts, jobs, export_service, protection, media, home_assistant, health_service, limits, upgrade_inbox, rotation_service, tls_inbox, storage_inbox, domain_inbox, monitor, stream_health, clock_service
@@ -317,7 +318,10 @@ class Application:
                         and isinstance(value.get('message'),str) and type(value.get('updated')) is int):status=value
                 finally:os.close(fd)
             except (OSError,ValueError,TypeError):pass
-            return '200 OK',{'status':status,'pending':(self.upgrade_inbox/'request.json').is_file() or (self.upgrade_inbox/approved_update.REQUEST).is_file(),
+            try:history=rollback_history.read(self.upgrade_status.parent)
+            except (OSError,ValueError,RuntimeError):history=[]
+            return '200 OK',{'status':status,'pending':(self.upgrade_inbox/'request.json').is_file() or (self.upgrade_inbox/approved_update.REQUEST).is_file() or (self.upgrade_inbox/rollback_history.REQUEST).is_file(),
+                             'restore_points':[r for r in history if r['version']!=__version__],
                              'packages':approved_update.available(),'version':__version__,
                              'key_configured':self.upgrade_public_key.is_file() and not self.upgrade_public_key.is_symlink()},[]
         match=re.fullmatch(r'/api/update-uploads/(archive|signature)',url)
@@ -338,6 +342,14 @@ class Application:
             return '200 OK',{'ok':True},[]
         if url=='/api/updates' and method=='POST':
             self.admin(user);data=self.json_body(environ)
+            if set(data)=={'restore_point','expected','confirm'}:
+                if data['confirm'] is not True or data['expected']!=__version__:raise APIError('409 Conflict','Potwierdź przywrócenie bazy aktualnej wersji.')
+                try:
+                    rollback_history.submit(self.upgrade_inbox,self.upgrade_status.parent,data['restore_point'],data['expected'],user[0])
+                    with db:self.audit(db,user[0],'upgrade.rollback','system','application')
+                    return '202 Accepted',{'ok':True},[]
+                except (BlockingIOError,FileExistsError):raise APIError('409 Conflict','Inna operacja oczekuje na wykonanie')
+                except (OSError,TypeError,ValueError,RuntimeError):raise APIError('400 Bad Request','Punkt przywracania jest niedostępny')
             if set(data)=={'package'}:
                 try:
                     approved_update.submit(self.upgrade_inbox,data['package'],user[0])
@@ -566,7 +578,7 @@ class Application:
                 by_camera={c['id']:c for c in cameras}
                 for cid,fid in db.execute('SELECT camera_id,ftp_account_id FROM camera_ftp_accounts ORDER BY ftp_account_id'):
                     if cid in by_camera:by_camera[cid]['accounts'].append(fid)
-            return '200 OK',{'users':users,'accounts':accounts,'cameras':cameras},[]
+            return '200 OK',{'users':users,'accounts':accounts,'cameras':cameras,'rtsp_only':database.rtsp_only(db)},[]
         if url=='/api/users' and method=='GET':
             self.admin(user)
             rows=db.execute('SELECT id,username,role,enabled FROM users ORDER BY username').fetchall()
@@ -636,6 +648,8 @@ class Application:
                 db.rollback();raise APIError('400 Bad Request',str(error))
             except (ValueError,TypeError,sqlite3.IntegrityError):
                 db.rollback();raise APIError('400 Bad Request','Nieprawidłowe dane lub ostatni aktywny administrator')
+        if (url=='/api/ftp-accounts' or url.startswith('/api/ftp-accounts/') or re.fullmatch(r'/api/cameras/[1-9][0-9]{0,9}/ftp-accounts',url)) and database.rtsp_only(db):
+            self.admin(user);raise APIError('410 Gone','FTP wycofano; użyj RTSP')
         if url=='/api/ftp-accounts' and method=='GET':
             self.admin(user)
             rows=db.execute('SELECT id,username,enabled,home_camera_id FROM ftp_accounts ORDER BY username').fetchall()
@@ -710,6 +724,17 @@ class Application:
                     self.audit(db,user[0],'camera.ftp','camera',cid)
                 return '200 OK',{'ok':True},[]
             except (ValueError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowa lista kont FTP')
+        if url=='/api/live-workspace' and method in ('GET','POST'):
+            if method=='GET':
+                return '200 OK',{'workspace':live_workspace.read(db,user)},[]
+            data=self.json_body(environ,maximum=128*1024)
+            try:
+                with db:
+                    db.execute('BEGIN IMMEDIATE');user=self.current_user(db,token)
+                    live_workspace.write(db,user,data)
+            except PermissionError as exc:raise APIError('403 Forbidden',str(exc)) from None
+            except ValueError as exc:raise APIError('400 Bad Request',str(exc)) from None
+            return '200 OK',{'ok':True},[]
         if url=='/api/layouts' and method=='GET':
             rows=db.execute('SELECT id,name,camera_ids FROM saved_layouts WHERE user_id=? ORDER BY name',(user[0],)).fetchall()
             layouts=[]
@@ -760,13 +785,14 @@ class Application:
                     ip=camera_discovery.validate_input(data['ip'],data.get('username',''),data.get('password',''))
                     detected=camera_discovery.discover_bounded(ip,data.get('username',''),data.get('password',''))
                     data={**data,'slug':data.get('slug') or 'cam-'+ip.replace('.','-'),'name':data.get('name') or 'Kamera '+ip,'main_url':detected.main,'sub_url':detected.sub,'username':'','password':''}
-                camera=Camera(data.get('slug',''),data.get('name',''),data.get('main_url',''),data.get('sub_url') or None,data.get('recording','ftp'))
+                camera=Camera(data.get('slug',''),data.get('name',''),data.get('main_url',''),data.get('sub_url') or None,data.get('recording','rtsp'))
                 username=data.get('username','');password=data.get('password','')
                 if not isinstance(username,str) or not isinstance(password,str):raise ValueError()
                 if username or password:
                     camera=Camera(camera.slug,camera.name,with_credentials(camera.main_url,username,password),
                                   with_credentials(camera.sub_url,username,password) if camera.sub_url else None,camera.recording)
                 validate(camera)
+                if camera.recording=='ftp' and database.rtsp_only(db):raise ValueError('FTP retired')
                 db.execute('BEGIN IMMEDIATE')
                 self.current_admin(db,token)
                 existing=db.execute('SELECT cameras.slug,camera_details.sub_url FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id').fetchall()
@@ -890,6 +916,74 @@ class Application:
             headers=[('Content-Type','video/mp4'),('Content-Length',str(part.length)),('Accept-Ranges','bytes'),('Content-Disposition',f'attachment; filename="sunhill-{jid}.mp4"')]
             if status.startswith('206'):headers.append(('Content-Range',f'bytes {part.start}-{part.end}/{part.total}'))
             return status,FileBody(fd,part,authorize=self.stream_authorizer(token,row[1],download=True,owner_id=row[0]),head=method=='HEAD'),headers
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/onvif-capabilities',url)
+        if match and method=='GET':
+            self.admin(user);cid=int(match.group(1))
+            if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
+            row=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
+            if not row:raise APIError('404 Not Found','Kamera niedostępna')
+            try:
+                with limits.slot(self.archive_lock.parent,'onvif-inspect',count=2):result=onvif_capabilities.inspect(row)
+            except limits.BusyError:raise APIError('429 Too Many Requests','Odczyt ONVIF zajęty') from None
+            except (OSError,ValueError):raise APIError('422 Unprocessable Entity','Nie udało się odczytać usług ONVIF') from None
+            self.current_admin(db,token)
+            return '200 OK',result,[]
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/firmware',url)
+        if match and method in ('GET','POST'):
+            self.admin(user);cid=int(match.group(1))
+            if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
+            sql='SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?'
+            row=db.execute(sql,(cid,)).fetchone()
+            if not row:raise APIError('404 Not Found','Kamera niedostępna')
+            try:
+                with limits.slot(self.archive_lock.parent,'camera-firmware',count=1):
+                    if method=='GET':
+                        identity=camera_firmware.identity(row);self.current_admin(db,token)
+                        return '200 OK',identity,[]
+                    if not workers.writes_permitted():raise APIError('503 Service Unavailable','Trwa konserwacja systemu')
+                    params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
+                    if set(params)!={'Manufacturer','Model','HardwareId','sha256','confirm'} or any(len(v)!=1 for v in params.values()) or params['confirm']!=['yes']:
+                        raise APIError('400 Bad Request','Wymagana tożsamość sprzętu, SHA-256 i potwierdzenie')
+                    expected={key:params[key][0] for key in ('Manufacturer','Model','HardwareId')}
+                    if any(not 1<=len(v)<=256 or any(ord(c)<32 for c in v) for v in expected.values()):raise APIError('400 Bad Request','Nieprawidłowa tożsamość sprzętu')
+                    if environ.get('CONTENT_TYPE')!='application/octet-stream':raise APIError('415 Unsupported Media Type','Wymagany plik firmware')
+                    length=environ.get('CONTENT_LENGTH','')
+                    if not re.fullmatch(r'[0-9]{1,9}',length) or not 0<int(length)<=camera_firmware.MAX_IMAGE or not re.fullmatch(r'[0-9a-fA-F]{64}',params['sha256'][0]):raise APIError('400 Bad Request','Nieprawidłowy rozmiar lub SHA-256')
+                    raw=environ['wsgi.input'].read(int(length))
+                    if len(raw)!=int(length):raise APIError('400 Bad Request','Niepełny plik firmware')
+                    camera_firmware.verify_image(raw,params['sha256'][0])
+                    with db:
+                        db.execute('BEGIN IMMEDIATE');user=self.current_admin(db,token)
+                        if not workers.writes_permitted() or not security.may_access(db,user,cid,live=True) or db.execute(sql,(cid,)).fetchone()!=row:raise APIError('409 Conflict','Konfiguracja kamery lub systemu uległa zmianie')
+                        self.audit(db,user[0],'camera.firmware.request','camera',cid)
+                    try:camera_firmware.upload(row,raw,expected)
+                    except (ValueError,OSError,http.client.HTTPException):
+                        with db:self.audit(db,user[0],'camera.firmware.unconfirmed','camera',cid)
+                        raise APIError('422 Unprocessable Entity','Nie potwierdzono aktualizacji. Sprawdź kamerę; nie ponawiaj automatycznie.') from None
+                    with db:self.audit(db,user[0],'camera.firmware.uploaded','camera',cid)
+                    return '200 OK',{'uploaded':True},[]
+            except limits.BusyError:raise APIError('429 Too Many Requests','Trwa inna operacja firmware') from None
+            except (ValueError,OSError,http.client.HTTPException):raise APIError('422 Unprocessable Entity','Nie można zweryfikować firmware lub kamery') from None
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/reboot',url)
+        if match and method=='POST':
+            self.admin(user);cid=int(match.group(1));data=self.json_body(environ)
+            if data!={'confirm':True} or data.get('confirm') is not True:
+                raise APIError('400 Bad Request','Wymagane jawne potwierdzenie restartu')
+            with db:
+                db.execute('BEGIN IMMEDIATE');user=self.current_admin(db,token)
+                if not security.may_access(db,user,cid,live=True):raise APIError('404 Not Found','Kamera niedostępna')
+                row=db.execute('SELECT main_url,onvif_url,onvif_username,onvif_password,onvif_auth FROM camera_details WHERE camera_id=?',(cid,)).fetchone()
+                if not row:raise APIError('404 Not Found','Kamera niedostępna')
+                try:camera_reboot.target(*row)
+                except camera_reboot.RebootError as exc:raise APIError('400 Bad Request',str(exc)) from None
+                # Commit the intent before remote I/O; outcome recorded separately.
+                self.audit(db,user[0],'camera.reboot.request','camera',cid)
+            try:camera_reboot.reboot(row)
+            except camera_reboot.RebootError as exc:
+                with db:self.audit(db,user[0],'camera.reboot.unconfirmed','camera',cid)
+                raise APIError('422 Unprocessable Entity',str(exc)) from None
+            with db:self.audit(db,user[0],'camera.reboot.confirmed','camera',cid)
+            return '200 OK',{'ok':True},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/(controls|settings)',url)
         if match and method in ('GET','POST'):
             self.admin(user)
@@ -1007,6 +1101,7 @@ class Application:
                     camera=Camera(camera.slug,camera.name,with_credentials(camera.main_url,username,password),
                                   with_credentials(camera.sub_url,username,password) if camera.sub_url else None,camera.recording,camera.enabled)
                 validate(camera)
+                if camera.recording=='ftp' and database.rtsp_only(db):raise ValueError('FTP retired')
                 existing=db.execute('SELECT cameras.slug,camera_details.sub_url FROM cameras JOIN camera_details ON cameras.id=camera_details.camera_id WHERE cameras.id<>?',(cid,)).fetchall()
                 aliases={alias for slug,sub in existing for alias in ([slug,slug+'_sub'] if sub else [slug])}
                 new_aliases={camera.slug}|({camera.slug+'_sub'} if camera.sub_url else set())
@@ -1124,6 +1219,64 @@ class Application:
                   AND CAST(strftime('%s',COALESCE(utc_second,utc_first)) AS INTEGER)+duration>?
                 ORDER BY utc_first,id LIMIT 1""",(slug,int(exclude_text),lower,after+0.05)).fetchone()
             return '200 OK',{'recording':{'id':row[0],'utc_first':row[1],'utc_second':row[2]} if row else None},[]
+        if url=='/api/admin/analytics' and method=='GET':
+            self.admin(user)
+            from . import analytics_models,face_profiles
+            return '200 OK',{'models':analytics_models.status(),'profiles':face_profiles.inventory(db)},[]
+        profile=re.fullmatch(r'/api/admin/analytics/faces/([0-9a-f]{32})',url)
+        if (url=='/api/admin/analytics/faces' and method=='POST') or (profile and method=='PUT'):
+            self.admin(user)
+            from . import analytics_models,face_profiles
+            try:
+                with limits.slot(self.archive_lock.parent,'face-enrollment',count=1):
+                    data=self.json_body(environ,maximum=face_profiles.MAX_UPLOAD_BODY)
+                    if set(data)!={'label','consent','images'} or data['consent'] is not True:
+                        raise ValueError('consent required')
+                    label=data['label']
+                    if not isinstance(label,str) or not 1<=len(label)<=80 or not label.strip() or any(ord(c)<32 for c in label):raise ValueError('invalid label')
+                    images=face_profiles.web_images(data['images'])
+                    with analytics_models.provisioning_lock(create=False,nonblocking=True):
+                        self.current_admin(db,token)
+                        try:model_id,features=face_profiles.web_features(images)
+                        except (ImportError,OSError) as exc:raise APIError('503 Service Unavailable','Modele YuNet/SFace lub zależności są niedostępne') from exc
+                        except ValueError:raise
+                        except Exception:raise APIError('422 Unprocessable Entity','Nie można przetworzyć zdjęcia lub modelu') from None
+                        if not workers.writes_permitted():raise APIError('503 Service Unavailable','Trwa konserwacja systemu')
+                        ident=face_profiles.enroll(db,label,features,model_id=model_id,profile_id=profile.group(1) if profile else None,authorize=lambda db:self.current_admin(db,token)[0])
+                return ('200 OK' if profile else '201 Created'),{'id':ident},[]
+            except LookupError:raise APIError('404 Not Found','Nieznany profil') from None
+            except (limits.BusyError,BlockingIOError):raise APIError('429 Too Many Requests','Trwa inna operacja AI') from None
+            except FileNotFoundError:raise APIError('503 Service Unavailable','Najpierw zainstaluj modele YuNet/SFace') from None
+            except (ValueError,TypeError):raise APIError('422 Unprocessable Entity','Wymagana zgoda, nazwa i 1-5 zdjęć JPEG/PNG z jedną wyraźną twarzą (maks. 8 MB/plik, 20 MB łącznie, 4096 px); sprawdź również zgodność modeli') from None
+            except OSError:raise APIError('503 Service Unavailable','Modele lub katalog roboczy są niedostępne') from None
+        if profile and method=='DELETE':
+            self.admin(user)
+            from . import face_profiles
+            if not face_profiles.remove(db,profile.group(1),authorize=lambda db:self.current_admin(db,token)[0]):
+                raise APIError('404 Not Found','Nieznany profil')
+            return '200 OK',{'ok':True},[]
+        if url=='/api/metadata/live' and method=='GET':
+            return '200 OK',{'cameras':object_analytics.live(db,user)},[]
+        match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/metadata-(settings|history)',url)
+        if match:
+            cid=int(match.group(1));part=match.group(2)
+            if part=='settings' and method in ('GET','PATCH'):
+                self.admin(user)
+                if not security.may_access(db,user,cid):raise APIError('404 Not Found','Nieznana kamera')
+                if method=='PATCH':
+                    data=self.json_body(environ)
+                    try:
+                        with db:
+                            db.execute('BEGIN IMMEDIATE');user=self.current_admin(db,token)
+                            if not security.may_access(db,user,cid):raise APIError('404 Not Found','Nieznana kamera')
+                            object_analytics.save_options(db,cid,data);self.audit(db,user[0],'camera.metadata.configure','camera',cid)
+                    except (ValueError,TypeError,sqlite3.IntegrityError):raise APIError('400 Bad Request','Nieprawidłowe ustawienia metadanych lub geometria reguły')
+                return '200 OK',object_analytics.options(db,cid),[]
+            if part=='history' and method=='GET':
+                if not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
+                params=parse_qs(environ.get('QUERY_STRING',''),keep_blank_values=True)
+                if set(params)!={'at_ms'} or len(params['at_ms'])!=1 or not re.fullmatch(r'[0-9]{1,13}',params['at_ms'][0]):raise APIError('400 Bad Request','Nieprawidłowy czas')
+                return '200 OK',{'frames':object_analytics.history(db,cid,int(params['at_ms'][0]),user)},[]
         match=re.fullmatch(r'/api/cameras/([1-9][0-9]{0,9})/event-settings',url)
         if match and method in ('GET','PATCH'):
             self.admin(user);cid=int(match.group(1))
@@ -1175,7 +1328,7 @@ class Application:
                 raw=params.get('camera',[''])[0];cid=int(raw) if raw else None
                 if cid is not None and not 1<=cid<=9999999999:raise ValueError()
                 kind=params.get('type',[''])[0]
-                if kind and kind not in camera_events.TYPES:raise ValueError()
+                if kind and kind not in camera_events.TYPES+object_analytics.RULE_TYPES:raise ValueError()
                 cursor=archive_cursor(params.get('cursor',[None])[0],event=True)
             except (ValueError,OverflowError):raise APIError('400 Bad Request','Nieprawidłowy filtr zdarzeń')
             if cid is not None and not security.may_access(db,user,cid):raise APIError('403 Forbidden','Odmowa dostępu')
@@ -1216,6 +1369,32 @@ class Application:
                 fold=local.fold if len(utc_candidates(local.replace(tzinfo=None),zone))==2 else None
                 events.append({'id':identifier,'timestamp':timestamp,'type':kind,'fold':fold,'ended_at':ended,'source':source,'zone':zone_name,'box':json.loads(box) if box else None})
             return '200 OK',{'events':events,'next_cursor':next_cursor},[]
+        match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/motion-search',url)
+        if match and method=='POST':
+            import math
+            rid=int(match.group(1));data=self.json_body(environ)
+            try:
+                if set(data)!={'box','start','duration'} or any(type(data[k]) not in (int,float) for k in ('start','duration')):raise ValueError()
+                box=camera_events.normalize_box(data['box']);start=data['start'];duration=data['duration']
+                if not math.isfinite(start) or not math.isfinite(duration) or start<0 or not 1<=duration<=motion_search.MAX_SECONDS:raise ValueError()
+            except (ValueError,OverflowError):raise APIError('400 Bad Request','Nieprawidłowy obszar lub zakres wyszukiwania (maks. 120 s)')
+            row=db.execute('SELECT recordings.relative_path,recordings.file_size,recordings.mtime_ns,recordings.duration,cameras.id,cameras.slug,i.device,i.inode,i.ctime_ns FROM recordings JOIN cameras ON cameras.slug=recordings.camera LEFT JOIN recording_identity i ON i.relative_path=recordings.relative_path WHERE recordings.id=?',(rid,)).fetchone()
+            if not row or row[0].split('/',1)[0]!=row[5]:raise APIError('404 Not Found','Nie znaleziono nagrania')
+            if not security.may_access(db,user,row[4]):raise APIError('403 Forbidden','Odmowa dostępu')
+            if start+duration>row[3]+.000001:raise APIError('400 Bad Request','Zakres poza nagraniem')
+            try:
+                with limits.slot(self.archive_lock.parent,'motion-search',count=1):
+                    fd,_=open_confined(self.archive_root,row[0],expected_size=row[1],expected_mtime_ns=row[2],expected_identity=recorded_identity(*row[6:9]))
+                    try:
+                        acquire_shared(fd)
+                        try:result=motion_search.scan(fd,start,duration,box)
+                        except ValueError:raise APIError('400 Bad Request','Nieprawidłowy obszar lub zakres wyszukiwania') from None
+                    finally:os.close(fd)
+            except limits.BusyError:raise APIError('429 Too Many Requests','Wyszukiwanie zajęte; spróbuj ponownie')
+            except (OSError,ValueError,MountBoundary,MountUnavailable):raise APIError('404 Not Found','Nagranie niedostępne')
+            except media.MediaError:raise APIError('422 Unprocessable Entity','Nie udało się przeanalizować całego zakresu w limicie czasu')
+            if not security.may_access(db,security.get_user(db,token),row[4]):raise APIError('403 Forbidden','Odmowa dostępu')
+            return '200 OK',result,[]
         match=re.fullmatch(r'/api/recordings/([1-9][0-9]{0,12})/frame',url)
         if match and method=='GET':
             import math

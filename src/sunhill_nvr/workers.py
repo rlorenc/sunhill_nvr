@@ -184,6 +184,13 @@ def index_once(config,db, *, full: bool=True, now: float | None=None, camera=Non
                            commit_guard=lambda:retention.shared_archive_lock(config.archive_lock),camera=camera,should_stop=should_stop,progress=progress,
                            remove_empty=lambda path,info:remove_empty_recording(config,db,path,info,guard=guard,active=active,now=now))
     if report.interrupted:return report
+    if full and camera is None and dates is None and not (report.failed or report.skipped or report.empty_deferred):
+        from . import metadata_retention
+        try:
+            with retention.shared_archive_lock(config.archive_lock):
+                metadata_retention.reconcile(db,guard=guard,complete=True,now=now)
+        except (retention.RetentionBusy,RuntimeError,sqlite3.Error) as exc:
+            logging.warning('AI archive reconciliation deferred: %s',type(exc).__name__)
     observations={}
     max_mtime=int(now+300)*1_000_000_000
     for (slug,) in db.execute("SELECT cameras.slug FROM cameras JOIN camera_details ON camera_details.camera_id=cameras.id WHERE cameras.enabled=1 AND camera_details.record_mode IN ('rtsp','ftp')"):
@@ -195,7 +202,7 @@ def index_once(config,db, *, full: bool=True, now: float | None=None, camera=Non
     return report
 
 def retention_once(config,db,*,preview: bool=True) -> retention.RetentionResult:
-    removed=[]
+    removed=[];removed_intervals=[]
     if not preview and not rotation_permitted():raise retention.RetentionBusy('rotation paused during maintenance')
     try:
         storage_check=storage_guard(db,config.archive)
@@ -211,13 +218,23 @@ def retention_once(config,db,*,preview: bool=True) -> retention.RetentionResult:
         trigger=minimum+buffer//2
         def note_remove(relative):
             removed.append(relative)
-            with db:db.execute('DELETE FROM recordings WHERE relative_path=?',(relative,))
+            with db:
+                row=db.execute('SELECT camera,utc_first,utc_second,duration FROM recordings WHERE relative_path=?',(relative,)).fetchone()
+                if row:removed_intervals.append(row)
+                db.execute('DELETE FROM recordings WHERE relative_path=?',(relative,))
         result=retention.run(config.archive,marker,minimum=trigger,
                              target=minimum+buffer,
                              lock_file=config.archive_lock,protected=is_protected,
                              active=detector(config,'archive'),preview=preview,mount_guard=guard,timezone_name=config.timezone,
                              on_remove=note_remove if not preview else None)
         if not preview:
+            if removed_intervals:
+                from . import metadata_retention
+                try:
+                    with retention.shared_archive_lock(config.archive_lock):
+                        metadata_retention.reconcile(db,guard=guard,removed=removed_intervals)
+                except (retention.RetentionBusy,RuntimeError,sqlite3.Error) as exc:
+                    logging.warning('AI rotation reconciliation deferred: %s',type(exc).__name__)
             state='rotation_ok' if result.reached_target else 'rotation_blocked'
             previous=db.execute("SELECT state FROM system_health WHERE name='rotation'").fetchone()
             if result.before<trigger or (previous and previous[0]!=state):

@@ -53,7 +53,7 @@ ReadWritePaths={writable}
 WantedBy=multi-user.target
 '''
 
-def render(config: Config, *, legacy_policy: bool=False) -> dict[str,str]:
+def render(config: Config, *, legacy_policy: bool=False, rtsp_only: bool=False) -> dict[str,str]:
     py='/usr/bin/python3 -m sunhill_nvr.cli'
     state=config.database.parent;lock=config.archive_lock.parent
     recorder_root=Path(os.path.commonpath((str(config.archive),str(config.staging))))
@@ -188,4 +188,11 @@ Unit=sunhill-upgrade-apply.service
 [Install]
 WantedBy=timers.target
 '''
+    if rtsp_only:
+        # Keep the four protected boot/recovery units byte-identical. The
+        # old release's files can therefore be restored by the new manager.
+        units.pop('sunhill-ftp.service')
+        units.pop('sunhill-ftp-policy.service',None)
+        units['sunhill-controller.service']=units['sunhill-controller.service'].replace(' sunhill-ftp-policy.service','').replace(' control-once',' control-rtsp-once')
+        units['sunhill-controller.timer']=units['sunhill-controller.timer'].replace('camera and FTP configuration','camera configuration')
     return units

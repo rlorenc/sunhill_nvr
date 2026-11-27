@@ -28,9 +28,9 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(d,'profiles',return_value=d.Streams('rtsp://192.168.0.10/main','rtsp://192.168.0.10/sub')),patch.object(d,'probe',side_effect=lambda url:url.endswith('/main')):
             r=d.discover('192.168.0.10');self.assertEqual(r.method,'onvif');self.assertIsNone(r.sub)
     def test_vendor_fallback_reolink_and_failure(self):
-        with patch.object(d,'profiles',side_effect=ValueError),patch.object(d,'probe',side_effect=lambda url:'h264Preview' in url):
+        with patch.object(d,'profiles',side_effect=ValueError),patch('sunhill_nvr.onvif_capabilities.streams',side_effect=ValueError),patch.object(d,'probe',side_effect=lambda url:'h264Preview' in url):
             r=d.discover('192.168.0.10');self.assertEqual(r.method,'rtsp');self.assertTrue(r.main.endswith('h264Preview_01_main'));self.assertTrue(r.sub.endswith('h264Preview_01_sub'))
-        with patch.object(d,'profiles',side_effect=ValueError),patch.object(d,'probe',return_value=False):
+        with patch.object(d,'profiles',side_effect=ValueError),patch('sunhill_nvr.onvif_capabilities.streams',side_effect=ValueError),patch.object(d,'probe',return_value=False):
             with self.assertRaises(d.DiscoveryError):d.discover('192.168.0.10')
     def test_worker_timeout_redacts_credentials(self):
         import subprocess

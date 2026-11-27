@@ -188,13 +188,28 @@ def media_paths(root):
     return {key:config[key] for key in ('archive','exports','staging')}
 
 
-def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print,repair=False):
+def ensure_analytics_dependencies(*,run=subprocess.run):
+    check=['/usr/bin/python3','-c','import cv2,numpy; assert hasattr(cv2, "dnn")']
+    packages=['python3-opencv','opencv-data','tesseract-ocr','tesseract-ocr-eng']
+    def ready():
+        if run(check,capture_output=True).returncode!=0:return False
+        try:result=run(['/usr/bin/tesseract','--list-langs'],capture_output=True,text=True)
+        except FileNotFoundError:return False
+        return result.returncode==0 and 'eng' in result.stdout.splitlines()
+    if ready():return
+    run(['/usr/bin/apt-get','update'],check=True)
+    run(['/usr/bin/apt-get','install','-y',*packages],check=True)
+    if not ready():raise RuntimeError('Local analytics dependencies unavailable after installation')
+
+def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print,repair=False,rtsp_only=False):
+    if rtsp_only and not repair:raise ValueError("RTSP migration requires recovery preparation")
     old=active_version(root)
     before=media_paths(root)
     emit('Sunhill NVR Update');emit('Installed version: '+old)
     automatic=archive is None
     selected=discover(source,root,old) if automatic else trusted_package(Path(archive).absolute())
     if selected is None:
+        if rtsp_only:raise ValueError('RTSP migration requires a newer approved release package')
         if (root/'config/maintenance.flag').exists() or any((root/'control/upgrade'/name).exists() for name in ('transaction.json','domain-transaction.json','tls-transaction.json','storage-transaction.json')):
             raise RuntimeError('Pending maintenance or recovery; refusing to report success')
         emit('No newer local release found; remote releases are not checked.')
@@ -204,6 +219,13 @@ def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print
     emit('Release package: '+str(selected))
     emit('Verifying manifest, backing up configuration/database, activating and checking services...')
     env=dict(os.environ,PYTHONPATH=str(root/'recovery/app'),PYTHONDONTWRITEBYTECODE='1',PYTHONUNBUFFERED='1')
+    # First installation of rollback-aware code must also migrate the pinned
+    # manager before activation, otherwise the old manager deletes its backups.
+    if not repair and (source/'src/sunhill_nvr/rollback_history.py').is_file() and not (root/'recovery/app/sunhill_nvr/rollback_history.py').is_file():
+        if not (source/'release-manifest.json').is_file():raise ValueError('Use the extracted rollback-aware release with --update --repair')
+        raw,meta=extracted_manifest(source)
+        if not expected or meta['version']!=expected[1]:raise ValueError('First rollback-aware update must match extracted release')
+        emit('Preparing rollback-aware recovery manager before first update.');repair=True
     if repair:
         # Explicit approval of the unpacked release. Verify every application
         # member before importing the repair manager from the new distribution.
@@ -220,6 +242,9 @@ def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print
             listed.add(relative)
         for path in (source/'src/sunhill_nvr').rglob('*'):
             if path.is_symlink() or (path.is_file() and str(path.relative_to(source)) not in listed):raise ValueError('Unexpected repair application member: '+str(path))
+        if rtsp_only:
+            emit('Checking/installing local analytics dependencies before stopping services...')
+            ensure_analytics_dependencies(run=run)
         timer='sunhill-upgrade-apply.timer'
         run(['/usr/bin/systemctl','stop',timer],check=True)
         # Stop the finalization retry loop; do not kill an active update.
@@ -229,7 +254,9 @@ def update(source,root,archive=None,*,run=subprocess.run,check=access,emit=print
         run(['/usr/bin/systemctl','start','sunhill-upgrade-recover.service'],check=True)
         run(['/usr/bin/systemctl','start','nginx.service'],check=True)
         env=dict(env,PYTHONPATH=str(source/'src'))
-        result=run(['/usr/bin/python3','-m','sunhill_nvr.repair_upgrade',str(selected)],env=env)
+        command=['/usr/bin/python3','-m','sunhill_nvr.repair_upgrade',str(selected)]
+        if rtsp_only:command.append('--rtsp-only')
+        result=run(command,env=env)
         if result.returncode==0:
             run(['/usr/bin/systemctl','reset-failed','sunhill-upgrade-apply.service'],check=False)
             run(['/usr/bin/systemctl','start',timer],check=True)
@@ -287,13 +314,31 @@ def refresh_recovery(source,root,*,run=subprocess.run,emit=print):
     emit('[OK] Storage recovery supports nested directories');emit('DONE');return 0
 
 
+def restore_cli(root,args,*,run=subprocess.run,confirm=input):
+    env=dict(os.environ,PYTHONPATH=str(root/'recovery/app'),PYTHONDONTWRITEBYTECODE='1',PYTHONUNBUFFERED='1')
+    base=['/usr/bin/python3','-m','sunhill_nvr.upgrade_admin']
+    if args==['--rollback-history']:return run(base+['rollback-history'],env=env).returncode
+    yes='--yes' in args
+    if args.count('--yes')>1:raise ValueError('Duplicate confirmation')
+    flags=[x for x in args if x!='--yes']
+    if flags==['--rollback']:target=[]
+    elif len(flags)==2 and flags[0]=='--downgrade' and VERSION.fullmatch(flags[1]):target=[flags[1]]
+    else:raise ValueError('Usage: install.sh --rollback [--yes] | --downgrade VERSION [--yes] | --rollback-history')
+    if not yes:
+        if not sys.stdin.isatty():raise ValueError('Use --yes to explicitly confirm restoring an older database')
+        if confirm('Restore previous database and configuration, losing later changes? Type YES: ')!='YES':return 1
+    return run(base+['rollback',*target,'--yes'],env=env).returncode
+
+
 def main():
     if os.geteuid()!=0:raise PermissionError('Run as root.')
     source=Path(__file__).resolve().parents[1]
     args=sys.argv[1:]
+    if args and args[0] in ('--rollback','--downgrade','--rollback-history'):return restore_cli(ROOT,args)
     if args==['--access']:access(ROOT);return 0
     if args==['--refresh-recovery']:return refresh_recovery(source,ROOT)
     if args==['--repair']:return update(source,ROOT,repair=True,emit=lambda message:print(message,flush=True))
+    if args==['--rtsp-only']:return update(source,ROOT,repair=True,rtsp_only=True,emit=lambda message:print(message,flush=True))
     if len(args)>1:raise ValueError('Usage: bash install.sh --update [RELEASE.tar.gz]')
     return update(source,ROOT,args[0] if args else None,emit=lambda message:print(message,flush=True))
 

@@ -17,7 +17,7 @@ def backup(config, destination: Path) -> None:
         database.backup(db,destination)
 
 
-def restore(config, source: Path) -> None:
+def restore(config, source: Path, *, invalidate_sessions: bool=False) -> None:
     info=source.lstat()
     if source.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_mode&0o077:
         raise ValueError('backup must be a private regular file')
@@ -29,16 +29,20 @@ def restore(config, source: Path) -> None:
             saved.backup(target)
             if target.execute('PRAGMA integrity_check').fetchone()!=('ok',):raise RuntimeError('restored database integrity check failed')
             if target.execute('PRAGMA foreign_key_check').fetchone() is not None:raise RuntimeError('restored database foreign key check failed')
+            if invalidate_sessions:
+                # A snapshot may contain previously revoked session tokens.
+                with target:
+                    target.execute('DELETE FROM sessions')
 
 
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(prog='sunhill-upgrade-database')
     parser.add_argument('--config',type=Path,required=True)
-    parser.add_argument('command',choices=('backup','restore'))
+    parser.add_argument('command',choices=('backup','restore','restore-retained'))
     parser.add_argument('file',type=Path)
     args=parser.parse_args(argv);config=load(args.config)
     if args.command=='backup':backup(config,args.file)
-    else:restore(config,args.file)
+    else:restore(config,args.file,invalidate_sessions=args.command=='restore-retained')
     return 0
 
 

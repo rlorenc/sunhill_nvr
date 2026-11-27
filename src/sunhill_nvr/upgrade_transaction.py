@@ -37,6 +37,7 @@ class Operations:
     restore_system: Callable[[Path], None] | None = None
     restore_system_offline: Callable[[Path], None] | None = None
     finalize_system: Callable[[], None] | None = None
+    retain: Callable[[dict], bool] | None = None
 
 
 def _sync_dir(path: Path) -> None:
@@ -112,9 +113,9 @@ def _read_journal(state: Path) -> dict | None:
     return value
 
 
-def _remove_journal(state: Path, backup: Path, system_backup: Path | None=None) -> None:
-    backup.unlink(missing_ok=True)
-    if system_backup is not None and (system_backup.exists() or system_backup.is_symlink()):
+def _remove_journal(state: Path, backup: Path, system_backup: Path | None=None, *, preserve: bool=False) -> None:
+    if not preserve:backup.unlink(missing_ok=True)
+    if not preserve and system_backup is not None and (system_backup.exists() or system_backup.is_symlink()):
         if system_backup.is_symlink() or not system_backup.is_dir():raise ReleaseError('invalid system backup')
         shutil.rmtree(system_backup)
     (state / 'transaction.json').unlink(missing_ok=True)
@@ -211,8 +212,9 @@ def _finalize_locked(versions: Path, current: Path, state: Path, ops: Operations
     # Units restored during offline recovery may not have boot jobs yet.
     ops.start()
     if ops.healthy() is not True:raise ReleaseError('recovered services are not healthy')
+    preserve=journal['phase']=='committed' and ops.retain is not None and ops.retain(journal) is True
     ops.unfence()
-    _remove_journal(state,state/journal['backup'],state/journal['system_backup'] if journal.get('system_backup') else None)
+    _remove_journal(state,state/journal['backup'],state/journal['system_backup'] if journal.get('system_backup') else None,preserve=preserve)
 
 
 def finalize_offline(versions: Path, current: Path, state: Path, ops: Operations) -> bool:
@@ -226,7 +228,7 @@ def finalize_offline(versions: Path, current: Path, state: Path, ops: Operations
     finally:os.close(fd)
 
 
-def activate(versions: Path, current: Path, state: Path, version: str, ops: Operations, *, request_id: str | None=None, supersede_rollback: bool=False) -> None:
+def activate(versions: Path, current: Path, state: Path, version: str, ops: Operations, *, request_id: str | None=None, supersede_rollback: bool=False, allow_restore: bool=False) -> None:
     """Activate an already verified release, rolling back on error or interruption."""
     if versions.is_symlink() or not versions.is_dir() or not VERSION.fullmatch(version):
         raise ReleaseError('invalid release location')
@@ -242,7 +244,8 @@ def activate(versions: Path, current: Path, state: Path, version: str, ops: Oper
     try:
         prior=_read_journal(state)
         old=_current_version(versions,current)
-        if _version_key(version)<=_version_key(old):raise ReleaseError('release is not newer than the installed version')
+        if version==old or (not allow_restore and _version_key(version)<=_version_key(old)):raise ReleaseError('release is not newer than the installed version')
+        if allow_restore and ops.retain is None:raise ReleaseError('restore requires retained backup support')
         if prior is not None:
             if not supersede_rollback or prior['phase']!='rolled_back' or prior['old']!=old:
                 raise ReleaseError('interrupted upgrade requires recovery')
@@ -287,7 +290,8 @@ def activate(versions: Path, current: Path, state: Path, version: str, ops: Oper
                 raise ReleaseError('upgrade failed and recovery remains required') from recovery
             raise ReleaseError('upgrade failed; previous version restored') from failure
         try:
+            preserve=ops.retain is not None and ops.retain(journal) is True
             ops.unfence()
-            _remove_journal(state,backup,system_backup)
+            _remove_journal(state,backup,system_backup,preserve=preserve)
         except Exception as failure:raise ReleaseError('release activated but final cleanup is incomplete') from failure
     finally:os.close(fd)

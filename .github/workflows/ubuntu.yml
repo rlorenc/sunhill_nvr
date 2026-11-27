@@ -14,7 +14,7 @@ jobs:
       - name: Install integration tools
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg openssl nginx proftpd-core apparmor apparmor-utils
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg openssl nginx proftpd-core apparmor apparmor-utils python3-opencv opencv-data tesseract-ocr tesseract-ocr-eng
           sudo useradd --user-group --no-create-home --shell /usr/sbin/nologin sunhill
           sudo apparmor_parser -r -T /etc/apparmor.d/proftpd
           sudo grep -qx 'proftpd (enforce)' /sys/kernel/security/apparmor/profiles
@@ -23,6 +23,16 @@ jobs:
           bash -n install.sh
           node --check src/sunhill_nvr/static/app.js
           node tests/browser_smoke.js
+      - name: Test browser layout, digital zoom and actual MP4 decoding
+        run: |
+          sudo apt-get install -y python3-venv
+          browser=$(command -v google-chrome)
+          python3 -m venv "$RUNNER_TEMP/sunhill-browser-verify"
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/pip" install playwright==1.57.0
+          export SUNHILL_BROWSER_EXECUTABLE="$browser"
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/live_controls_browser.py
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/live_layout_browser.py
+          "$RUNNER_TEMP/sunhill-browser-verify/bin/python" tests/archive_buffer_browser.py
       - name: Run Python and Ubuntu configuration tests (including root-owned fixtures)
         run: sudo env SUNHILL_UBUNTU_INTEGRATION=1 PYTHONPATH="$PWD/src" /usr/bin/python3 -m unittest discover -s tests -v
       - name: Verify installer directory permissions with real service account
@@ -72,8 +82,17 @@ jobs:
           tar -xzf "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz" -C "$RUNNER_TEMP"
           cd "$RUNNER_TEMP/sunhill-nvr-$version"
           bash tests/ubuntu_default_resume_smoke.sh "${{ matrix.mode }}"
+  rtsp-migration:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Test migration of a real 1.0.2 installation to RTSP-only and retained downgrade
+        run: bash tests/ubuntu_rtsp_migration_smoke.sh
   package-verified:
-    needs: [verify, install-smoke, default-install]
+    needs: [verify, install-smoke, default-install, rtsp-migration]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && success() }}
     runs-on: ubuntu-26.04
     steps:
@@ -86,6 +105,7 @@ jobs:
           git checkout -B main "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           version=$(PYTHONPATH=src python3 -c 'from sunhill_nvr import __version__; print(__version__)')
+          test "$version" != 1.0.2 # Do not publish work-in-progress over the existing release.
           python3 scripts/package_release.py "$RUNNER_TEMP/sunhill-nvr-$version.tar.gz"
       - uses: actions/upload-artifact@v4
         with:

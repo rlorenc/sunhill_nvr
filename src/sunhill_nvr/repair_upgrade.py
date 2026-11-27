@@ -5,6 +5,7 @@ recovered by the ordinary recovery manager before this command is allowed.
 """
 from __future__ import annotations
 import argparse
+from dataclasses import replace
 import fcntl
 import json
 import os
@@ -43,7 +44,8 @@ def permitted(adapter,old):
     return prior
 
 
-def repair(adapter,archive,*,root=admin.ROOT,versions=admin.VERSIONS,current=admin.CURRENT):
+def repair(adapter,archive,*,root=admin.ROOT,versions=admin.VERSIONS,current=admin.CURRENT,rtsp_only=False):
+    if rtsp_only:adapter=replace(adapter,retire_ftp=True)
     fd=os.open(adapter.state/'manager.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     try:
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -52,6 +54,7 @@ def repair(adapter,archive,*,root=admin.ROOT,versions=admin.VERSIONS,current=adm
         admin.trusted_file(archive)
         staged=stage_unsigned_tar(archive,versions,reuse_existing=True)
         if _version_key(staged.name)<=_version_key(old):raise ReleaseError('repair package must be newer than current')
+        if rtsp_only:adapter._as_service(staged,'sunhill_nvr.cli','--config',str(adapter.config_file),'verify-rtsp-recorders')
         previous=migrate(adapter,root,versions,current,admin.PUBLIC_KEY,archive,None,prepare_next=True,repair=True)
         print('Previous recovery preserved: '+str(previous),flush=True)
         activate(versions,current,adapter.state,staged.name,adapter.operations(),supersede_rollback=True)
@@ -60,8 +63,9 @@ def repair(adapter,archive,*,root=admin.ROOT,versions=admin.VERSIONS,current=adm
 
 def main(argv=None):
     parser=argparse.ArgumentParser();parser.add_argument('archive',type=Path)
+    parser.add_argument('--rtsp-only',action='store_true')
     args=parser.parse_args(argv)
-    repair(admin.context(),args.archive)
+    repair(admin.context(),args.archive,rtsp_only=args.rtsp_only)
     return 0
 
 if __name__=='__main__':raise SystemExit(main())

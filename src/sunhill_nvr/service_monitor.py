@@ -5,18 +5,18 @@ import sqlite3
 import subprocess
 import time
 from .upgrade_system import SERVICES
-from . import monitor
+from . import monitor,database,lifecycle
 
 
 class MonitorError(RuntimeError):pass
 
 
-def query(*, run=subprocess.run, monotonic=time.monotonic, budget: float=15) -> dict[str,str]:
+def query(*, run=subprocess.run, monotonic=time.monotonic, budget: float=15, rtsp_only: bool=False) -> dict[str,str]:
     if not isinstance(budget,(int,float)) or isinstance(budget,bool) or not 0<budget<=60:raise ValueError('invalid monitor budget')
     states={}
     deadline=monotonic()+budget
     try:
-        for service in SERVICES:
+        for service in (lifecycle.RTSP_ACTIVE if rtsp_only else SERVICES):
             remaining=deadline-monotonic()
             if remaining<=0:raise MonitorError('service state query timed out')
             result=run(['/usr/bin/systemctl','show','--property=ActiveState','--value',service],
@@ -39,11 +39,13 @@ def _monitor_status(db: sqlite3.Connection, available: bool, now: int) -> None:
             db.execute("INSERT INTO pending_notifications(camera_id,source,state,created_at) VALUES(NULL,'service_monitor',?,?)",(state,now))
 
 
-def check(db: sqlite3.Connection, *, now: int | None=None, inspect=query) -> None:
+def check(db: sqlite3.Connection, *, now: int | None=None, inspect=None) -> None:
     now=int(time.time()) if now is None else now
+    rtsp_only=database.rtsp_only(db)
+    expected=lifecycle.RTSP_ACTIVE if rtsp_only else SERVICES
     try:
-        states=inspect()
-        if set(states)!=set(SERVICES) or any(s not in ('active','inactive','failed','activating','deactivating','reloading') for s in states.values()):
+        states=query(rtsp_only=rtsp_only) if inspect is None else inspect()
+        if set(states)!=set(expected) or any(s not in ('active','inactive','failed','activating','deactivating','reloading') for s in states.values()):
             raise MonitorError('incomplete service state')
     except (MonitorError,OSError):
         _monitor_status(db,False,now);return

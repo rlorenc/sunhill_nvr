@@ -15,7 +15,7 @@ from sunhill_nvr.upgrade_system import SystemAdapter, SERVICES, _copy_private
 class UpgradeSystemTests(unittest.TestCase):
     def modern_fixture(self,root,*,conflict=False,unsafe_dependency=False):
         from sunhill_nvr import lifecycle
-        state=root/'state';state.mkdir();units=root/'units';units.mkdir();proxy=root/'nginx.conf';proxy.write_text('old proxy')
+        state=root/'state';state.mkdir();units=root/'units';units.mkdir();proxy=root/'nginx.conf';proxy.write_text('old proxy');(root/'config').write_text('{}')
         old_names=sorted(set(lifecycle.ACTIVE)|{'sunhill-controller.service','sunhill-upgrade-recover.service'})
         new_names=sorted((set(old_names)-{'sunhill-clock.service'})|{'sunhill-motion.service'})
         (state/'managed-units.json').write_text(json.dumps(old_names));(state/'lifecycle.json').write_text(json.dumps(lifecycle.default()))
@@ -58,6 +58,17 @@ class UpgradeSystemTests(unittest.TestCase):
             self.assertEqual(adapter._managed_names(),old_names);self.assertFalse((units/'sunhill-motion.service').exists())
             self.assertEqual((units/'sunhill-clock.service').read_text(),'old sunhill-clock.service');self.assertEqual(proxy.read_text(),'old proxy')
             self.assertNotIn('sunhill-export.service',adapter._runtime()['enabled'])
+
+    def test_retained_system_backup_can_be_reversed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);adapter,backup,units,proxy,calls,old_names,new_names=self.modern_fixture(root)
+            proxy.write_text('if (-f /opt/sunhill-nvr/config/maintenance.flag) { return 503; }\nold proxy')
+            original=Path.is_file
+            with patch.object(Path,'is_file',autospec=True,side_effect=lambda p:True if str(p)=='/usr/sbin/proftpd' else original(p)):
+                adapter.backup_system(root/'candidate',backup);adapter.apply_system(backup)
+                reverse=root/'reverse';adapter.backup_rollback_system(backup,reverse);adapter.apply_system(reverse)
+                self.assertEqual(adapter._managed_names(),old_names);self.assertFalse((units/'sunhill-motion.service').exists())
+                adapter.restore_system(reverse);self.assertEqual(adapter._managed_names(),new_names)
 
     def test_interrupted_unit_change_restores_both_manifests(self):
         with tempfile.TemporaryDirectory() as tmp:

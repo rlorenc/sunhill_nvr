@@ -6,6 +6,8 @@ Sunhill NVR to samodzielnie hostowany system monitoringu dla Ubuntu Server, łą
 
 System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wieloterabajtowym archiwum.
 
+**1.1.2: kandydat do odbioru.** Nie uzyskano jeszcze wyników CI Ubuntu 26.04, odbioru fizycznych kamer ani inferencji rzeczywistymi modelami ONNX. Nie wdrażać na produkcyjne archiwum przed weryfikacją na kopii instalacji. Zobacz [instrukcję analizy i odbioru](docs/analytics-1.1.0.md).
+
 ## Najważniejsze funkcje
 
 | Obszar | Możliwości |
@@ -13,9 +15,9 @@ System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wi
 | Podgląd na żywo | Wielokamerowa siatka, ręczna zmiana położenia i rozmiaru kafelków, powiększanie dwuklikiem i powrót do poprzedniego układu, pełny ekran, dźwięk i wybór jakości zapamiętywany dla każdej kamery. |
 | Kamery IP | Dodawanie po adresie IP, wykrywanie strumieni RTSP przez ONVIF i znane ścieżki producentów, konfiguracja ręczna oraz identyfikacja modelu. |
 | Sterowanie kamerami | Reflektor, IR, zoom optyczny, ostrość, autofocus, zapisane pozycje PTZ oraz wybrane ustawienia obrazu, dźwięku, detekcji i funkcji urządzenia. Wykrywanie dostępności per kamera Reolink. |
-| Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo (HEVC z oznaczeniem `hvc1` po rozpoznaniu kodeka), odbiór nagrań przez FTP oraz segmenty RTSP od 30 sekund do 60 minut. |
-| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
-| Zdarzenia AI | Alarmy osoby, pojazdu i zwierzęcia z kamer Reolink (Baichuan lub CGI), filtrowanie, znaczniki i przejście do nagrania. Bez dodatkowych zdjęć, klipów ani analizy obrazu. |
+| Nagrywanie | Ciągłe nagrywanie RTSP do MP4 z zachowaniem oryginalnego strumienia wideo (HEVC z oznaczeniem `hvc1` po rozpoznaniu kodeka), segmenty RTSP od 30 sekund do 60 minut. |
+| Archiwum | Oś czasu całej doby, kalendarz z podświetleniem wyłącznie dni zawierających nagrania wybranej kamery, przewijanie, zmienna prędkość, pełny ekran i odtwarzanie kilku kamer w tym samym czasie. Zoom cyfrowy i przesuwanie obrazu, wyszukiwanie zmian w wybranym obszarze nagrań. W archiwum pojedynczej kamery automatyczny bezstratny remux starszych plików HEVC `hev1` na żądanie, jeżeli przeglądarka odrzuci źródło. |
+| Zdarzenia AI | Alarmy osoby, pojazdu i zwierzęcia z kamer Reolink (Baichuan lub CGI), filtrowanie, znaczniki i przejście do nagrania. Metadane ONVIF, lokalny fallback, ramki, ścieżki, reguły stref i linii, wykrywanie zasłonięcia, OCR tablic, opcjonalne modele COCO i profile twarzy. Metadane wraz z dostępnymi nagraniami; bez dodatkowych zdjęć i klipów. Ograniczenia w dokumentacji odbioru. |
 | Import nagrań | Przyrostowe indeksowanie istniejących plików MP4, wybór kamery i okresu, wstrzymywanie skanu, liczniki postępu i bezpieczne czyszczenie starych pustych plików. |
 | Eksport | Pobieranie oryginalnych plików, eksport wybranego fragmentu do MP4, zapisywanie klatek i ochrona nagrań przed rotacją. |
 | Magazyn danych | Konfigurowalne katalogi nagrań, bufora i eksportów, automatyczna rotacja, kontrola wolnego miejsca oraz wymiana dysku bez rejestrowania UUID. |
@@ -26,12 +28,11 @@ System jest używany w rzeczywistej instalacji monitoringu z 11 kamerami IP i wi
 
 ```text
 Kamery IP
-    | RTSP / FTP / ONVIF / Reolink CGI / Baichuan
+    | RTSP / ONVIF / Reolink CGI / Baichuan
     v
 Sunhill NVR
     |-- go2rtc       - dystrybucja obrazu na żywo
     |-- FFmpeg       - nagrywanie, przetwarzanie i eksport
-    |-- ProFTPD      - odbiór nagrań FTP
     |-- Python       - backend, API, indeksowanie i monitoring
     |-- SQLite       - konfiguracja, indeks nagrań i metadane zdarzeń
     |-- Nginx        - dostęp HTTP/HTTPS
@@ -47,11 +48,11 @@ Aplikacja nie wymaga osobnego klienta ani zewnętrznego serwera bazy danych. Nag
 
 Platforma: **Ubuntu Server 26.04 LTS**, serwer fizyczny lub maszyna wirtualna. Potrzebne są uprawnienia root, dostęp do sieci kamer, przestrzeń na nagrania i dostęp do repozytoriów zależności.
 
-Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład dla 1.0.2:
+Rozpakuj wybraną wersję paczki, wejdź do jej katalogu i uruchom instalator jako root. Przykład na odizolowanej maszynie testowej dla kandydata 1.1.2:
 
 ```bash
-tar -xzf sunhill-nvr-1.0.2.tar.gz
-cd sunhill-nvr-1.0.2
+tar -xzf sunhill-nvr-1.1.2.tar.gz
+cd sunhill-nvr-1.1.2
 bash install.sh
 ```
 
@@ -73,7 +74,7 @@ Instalator przygotowuje zależności, konfigurację usług i środowisko aplikac
 - Domena: `https://nvr.example.com`.
 - Cloudflare Tunnel dla domeny publicznej: origin `http://127.0.0.1:8080`.
 
-HTTP po adresie IP jest przeznaczone wyłącznie dla zaufanej sieci lokalnej. Do dostępu zdalnego używaj HTTPS. Portów RTSP, FTP i API kamer nie wystawiaj bezpośrednio do Internetu. Szczegóły konfiguracji: [magazyn i TLS](docs/storage-and-tls.md).
+HTTP po adresie IP jest przeznaczone wyłącznie dla zaufanej sieci lokalnej. Do dostępu zdalnego używaj HTTPS. Portów RTSP, audio i API kamer nie wystawiaj bezpośrednio do Internetu. Szczegóły konfiguracji: [magazyn i TLS](docs/storage-and-tls.md).
 
 ## Pierwsza konfiguracja
 
@@ -155,6 +156,7 @@ Tryby naprawcze i migracja mechanizmu recovery są opisane w [dokumentacji aktua
 | [Magazyn i TLS](docs/storage-and-tls.md) | Konfiguracja dysków, ścieżek i dostępu HTTPS |
 | [Home Assistant](docs/home-assistant.md) | Zdarzenia, powiadomienia i przykładowe automatyzacje |
 | [Aktualizacje i recovery](docs/releasing.md) | Wydania, kopie, migracje i odzyskiwanie |
+| [Analiza i odbiór 1.1.0](docs/analytics-1.1.0.md) | Modele, profile, RTSP-only, kryteria odbioru |
 | [Historia zmian](CHANGELOG.md) | Zmiany w kolejnych wersjach |
 | [Specyfikacja](SPECIFICATION.md) | Uzgodnione wymagania funkcjonalne i techniczne |
 | [Status techniczny](STATUS.md) | Wyniki testów i potwierdzenia wdrożeń |
@@ -175,3 +177,7 @@ git clone sunhill-nvr-history.bundle sunhill-nvr
 ```
 
 Szczegóły przygotowania wydań i zasady pracy: [AGENTS.md](AGENTS.md) oraz [HANDOVER.md](HANDOVER.md).
+
+### Ręczne przywracanie wersji (1.1.3+)
+
+Zachowane punkty przywracania są dostępne w Administracja / Aktualizacja aplikacji oraz przez `bash install.sh --rollback-history`, `bash install.sh --rollback` i `bash install.sh --downgrade WERSJA`. Pierwsze wdrożenie z rozpakowanego 1.1.3 wymaga aktualizacji przypiętego recovery (automatyczna ścieżka repair lub jawne `--update --repair`; `--update --rtsp-only` przy migracji FTP). Uwaga: przywracana jest historyczna baza, a nie migracja danych wstecz. [Instrukcja](docs/rollback-1.1.3.md).

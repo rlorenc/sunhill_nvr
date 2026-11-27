@@ -75,6 +75,7 @@ def request(root: Path,archive: str,signature: str,user_id: int) -> None:
     if type(user_id) is not int or user_id<1:raise ValueError('invalid requesting user')
     # Serialize with upload cleanup and removal until the request is published.
     with _upload_lock(root):
+        if (root/'rollback-request.json').exists() or (root/'rollback-request.json').is_symlink():raise FileExistsError('rollback pending')
         if (root/'approved-update.json').exists() or (root/'approved-update.json').is_symlink():raise FileExistsError('approved update pending')
         files=[filename('archive',archive),filename('signature',signature)]
         for name in files:

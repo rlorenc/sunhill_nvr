@@ -5,7 +5,7 @@ if(typeof quit==='undefined')globalThis.quit=(code)=>{process.exitCode=code;};
 const nodes = new Map();
 function node() {
   return {
-    value:'',textContent:'',hidden:false,style:{setProperty(key,value){this[key]=value;},removeProperty(key){delete this[key];}},dataset:{},currentTime:0,currentSrc:'',
+    value:'',textContent:'',hidden:false,parentElement:{hidden:false},style:{setProperty(key,value){this[key]=value;},removeProperty(key){delete this[key];}},dataset:{},currentTime:0,currentSrc:'',
     listeners:{},children:[],
     addEventListener(name,handler){this.listeners[name]=handler;},
     append(...items){this.children.push(...items);},
@@ -38,10 +38,31 @@ const code=typeof readFile==='function'?readFile('src/sunhill_nvr/static/app.js'
 eval(code+`
 (async()=>{
   me={timezone:'Europe/Warsaw'};
+  const originalView=view;let logoTarget=null;view=which=>{logoTarget=which;};$('brand-live').listeners.click();if(logoTarget!=='cameras')throw new Error('brand did not open Live');me=null;logoTarget=null;$('brand-live').listeners.click();if(logoTarget!==null)throw new Error('brand bypassed login');me={timezone:'Europe/Warsaw'};view=originalView;
   api=async()=>({origin:'https://nvr.example',supported:false,pending:false,status:{state:'idle',message:''}});
   await refreshDomain();
   if(!$('domain-current').textContent.includes('https://nvr.example')||!$('domain-status').textContent.includes('migracji'))throw new Error('domain settings status missing');
+  let deletedProfile=null;
+  api=async(url,method)=>{if(method==='DELETE'){deletedProfile=url;return {ok:true};}return {models:{coco:{state:'missing'},'face-detector':{state:'present'},'face-recognizer':{state:'untrusted'}},profiles:deletedProfile?[]:[{id:'abc',label:'Example profile',samples:2}]};};
+  await refreshAnalyticsAdmin();
+  if(!$('analytics-models').children[0].textContent.includes('Brak pliku')||!$('analytics-models').children[1].textContent.includes('niezweryfikowana'))throw new Error('model status missing');
+  $('analytics-profiles').children[1].children[2].listeners.click();
+  if(faceEnrollmentId!=='abc'||$('face-enrollment-label').value!=='Example profile')throw new Error('profile update form missing');
+  let faceUpdate=null;globalThis.FileReader=class {readAsDataURL(){this.result='data:image/png;base64,YWJj';this.onload();}};
+  const inventoryAPI=api;api=async(url,method,data)=>{if(method==='PUT'){faceUpdate={url,data};return {id:'abc'};}return inventoryAPI(url,method,data);};
+  $('face-enrollment-images').files=[{size:3}];$('face-enrollment-consent').checked=true;
+  await $('face-enrollment-form').listeners.submit({preventDefault(){}});
+  if(faceUpdate?.url!=='/api/admin/analytics/faces/abc'||faceUpdate.data.images[0]!=='YWJj'||faceEnrollmentId!==null)throw new Error('profile update submission missing');
+  await $('analytics-profiles').children[1].children[1].listeners.click();
+  if(deletedProfile!=='/api/admin/analytics/faces/abc'||!$('analytics-profiles').children[1].textContent.includes('Brak zapisanych'))throw new Error('profile removal not refreshed');
   activeCamera={id:1,name:'Brama',may_download:false};
+  const longWindows=motionWindows({id:12},0,300);
+  if(longWindows.length!==3||longWindows[1].start!==119.5||longWindows[2].start+longWindows[2].duration!==300)throw new Error('motion window coverage invalid');
+  records=[{id:11,duration:130,local_time:'08:00:00'},{id:12,duration:2,local_time:'08:02:10'}];archiveRecordId=11;motionRegion={rid:11,box:[0,0,.5,.5]};$('archive-view').hidden=false;$('motion-search-scope').value='day';
+  const motionCalls=[];api=async(url,method,data)=>{motionCalls.push({url,data});return {hits:[{start:data.start+.5,end:data.start+.5}]};};
+  await $('motion-search-run').listeners.click();
+  if(motionCalls.length!==3||!motionCalls[2].url.includes('/12/')||$('motion-search-results').children.length!==3)throw new Error('day motion search did not scan multiple files');
+  resetMotionSearch();
   $('archive-date').value='2026-11-21';loadedArchiveDate='2026-11-21';
   const previous={id:11,local_time:'2026-11-21T23:59:58',utc_first:'2026-11-21T22:59:58+00:00',utc_second:null,duration:2,protected:false};
   const following={id:12,local_time:'2026-11-22T00:00:00',utc_first:'2026-11-21T23:00:00+00:00',utc_second:null,duration:2,protected:false};

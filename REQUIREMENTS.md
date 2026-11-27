@@ -32,3 +32,9 @@ Decyzja użytkownika 0.3.13 (poz. 35–36): przyrostowy import istniejących pli
 Decyzja użytkownika 0.3.17 (poz. 19, 22, 35, 63, 67, 68): dwuklik wideo Live powiększa i przywraca kafelek; automatyczne usuwanie potwierdzonych pustych nagrań podczas indeksowania po dodatkowej weryfikacji, natychmiastowa informacja o przyjęciu zlecenia.
 
 Decyzja użytkownika 1.0.2 (poz. 1, 5, 39–40, 50): jedna dotychczasowa baza SQLite, natywne zdarzenia AI kamer Reolink zgodne z ich ustawieniami, historia i przejście do nagrania, prostokąty tylko z rzeczywistymi metadanymi, bez miniatur i dodatkowych plików zdarzeń; zachowana instalacja od zera.
+
+Decyzje użytkownika 1.1.0 (poz. 1–2, 15–32, 39–50, 76, 80): jedno wydanie obejmujące dwukierunkowy głos, zoom cyfrowy i przesuwanie, trwały układ per użytkownik, wszystkie wykryte ramki, śledzenie, edytor reguł przestrzennych, przekroczenie linii, wtargnięcie, pozostawione przedmioty, zasłonięcie, rozpoznawanie twarzy i tablic, wyszukiwanie zmian w obszarze archiwum, restart i firmware kamer, rozszerzenia ONVIF M/T, wycofanie FTP, instalator i CI. Logo prowadzi do Live. Retencja metadanych wynika z faktycznie dostępnego archiwum; nie zmienia retencji MP4. Szczegóły implementacji, ograniczenia i odbiór: docs/analytics-1.1.0.md.
+
+Decyzja użytkownika 1.1.2 (poz. 19/39/50): dodawanie i aktualizacja zdjęć profili twarzy w aplikacji WWW, również przez bezpośrednie połączenie w LAN; CLI pozostaje dostępne.
+
+Decyzja użytkownika 1.1.3 (poz. 5): ręczny rollback/downgrade z konsoli i WWW, ostatnie pięć punktów z kopią SQLite i usług, automatyczne odzyskanie w razie błędu, bez operacji na plikach nagrań. Przywrócenie bazy wymaga potwierdzenia. Szczegóły i ograniczenia w SPECIFICATION.md i docs/rollback-1.1.3.md.

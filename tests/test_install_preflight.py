@@ -41,6 +41,11 @@ class PortPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r'21 \(FTP\).*1984 \(go2rtc\)'):
                 require_ports_free(root)
 
+    def test_audio_backchannel_port_is_required(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);(root/'tcp').write_text(HEADER+row(1986),encoding='ascii')
+            with self.assertRaisesRegex(ValueError,'1986.*audio backchannel'):require_ports_free(root)
+
     def test_missing_ipv6_table_and_unrelated_ports_are_allowed(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
